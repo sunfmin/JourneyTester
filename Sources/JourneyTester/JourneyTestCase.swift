@@ -47,6 +47,7 @@ open class JourneyTestCase: XCTestCase {
 
     private var lastSnapDate = Date()
     private var watchdogTimer: Timer?
+    private var stepIndex = 0
 
     private var outputRoot: String {
         if let env = ProcessInfo.processInfo.environment["JOURNEY_TESTER_OUTPUT"] {
@@ -134,12 +135,12 @@ open class JourneyTestCase: XCTestCase {
         line: UInt = #line,
         _ body: () throws -> Void
     ) {
+        stepIndex += 1
         let safeName = sanitize(name)
         snap("step-\(safeName)-begin")
 
         let stepStart = Date()
 
-        // If slow is expected, take periodic snapshots during the step
         var periodicTimer: Timer?
         if slowOkReason != nil {
             var periodicCount = 0
@@ -150,11 +151,18 @@ open class JourneyTestCase: XCTestCase {
             }
         }
 
+        var status = "passed"
+        var errorMessage: String?
+
         do {
             try body()
         } catch {
             periodicTimer?.invalidate()
+            status = "failed"
+            errorMessage = "\(error)"
             snap("FAIL-step-\(safeName)")
+            logStep(index: stepIndex, name: name, elapsed: Date().timeIntervalSince(stepStart),
+                    timeout: timeout, slowOkReason: slowOkReason, status: status, error: errorMessage)
             XCTFail("Step '\(name)' failed: \(error)", file: file, line: line)
             return
         }
@@ -163,14 +171,48 @@ open class JourneyTestCase: XCTestCase {
 
         let elapsed = Date().timeIntervalSince(stepStart)
 
-        if elapsed > timeout {
+        if elapsed > timeout && slowOkReason == nil {
+            status = "slow"
             snap("SLOW-step-\(safeName)")
-            if slowOkReason == nil {
-                XCTFail("""
-                    Step '\(name)' took \(String(format: "%.1f", elapsed))s (limit: \(Int(timeout))s).
-                    If this is expected, add: step("\(name)", timeout: N, slowOkReason: "reason") { ... }
-                    Artifacts: \(artifactDir)/
-                    """, file: file, line: line)
+            logStep(index: stepIndex, name: name, elapsed: elapsed,
+                    timeout: timeout, slowOkReason: slowOkReason, status: status, error: nil)
+            XCTFail("""
+                Step '\(name)' took \(String(format: "%.1f", elapsed))s (limit: \(Int(timeout))s).
+                If this is expected, add: step("\(name)", timeout: N, slowOkReason: "reason") { ... }
+                Artifacts: \(artifactDir)/
+                """, file: file, line: line)
+            return
+        }
+
+        logStep(index: stepIndex, name: name, elapsed: elapsed,
+                timeout: timeout, slowOkReason: slowOkReason, status: status, error: nil)
+    }
+
+    // MARK: - Step log (JSONL)
+
+    private func logStep(index: Int, name: String, elapsed: TimeInterval,
+                         timeout: TimeInterval, slowOkReason: String?,
+                         status: String, error: String?) {
+        var entry: [String: Any] = [
+            "step": index,
+            "name": name,
+            "elapsed_s": round(elapsed * 100) / 100,
+            "timeout_s": timeout,
+            "status": status,
+        ]
+        if let reason = slowOkReason { entry["slow_ok_reason"] = reason }
+        if let err = error { entry["error"] = err }
+
+        if let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]),
+           let line = String(data: data, encoding: .utf8)
+        {
+            let path = "\(artifactDir)/steps.jsonl"
+            if let handle = FileHandle(forWritingAtPath: path) {
+                handle.seekToEndOfFile()
+                handle.write(Data((line + "\n").utf8))
+                handle.closeFile()
+            } else {
+                try? (line + "\n").write(toFile: path, atomically: true, encoding: .utf8)
             }
         }
     }
