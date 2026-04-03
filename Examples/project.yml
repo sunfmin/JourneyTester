@@ -1,0 +1,38 @@
+name: JourneyTesterExamples
+options:
+  bundleIdPrefix: com.journeytester
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+
+packages:
+  JourneyTester:
+    path: ..
+
+targets:
+  HostApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: HostApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.journeytester.host
+        GENERATE_INFOPLIST_FILE: YES
+
+  SafariUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: SafariUITests
+        excludes:
+          - Info.plist
+    dependencies:
+      - target: HostApp
+      - package: JourneyTester
+    info:
+      path: SafariUITests/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.journeytester.safari-uitests
+        TEST_TARGET_NAME: HostApp
