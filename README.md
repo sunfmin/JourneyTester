@@ -169,6 +169,7 @@ final class SafariTests: JourneyTestCase {
 | `journeyName` | required | Folder name for artifacts |
 | `appBundleID` | `nil` | Bundle ID of app under test. `nil` = test host app |
 | `axTreeDepth` | `8` | Max depth for AX tree traversal |
+| `watchdogTimeout` | `10` | Seconds without `snap()` before test fails |
 
 ### Methods
 
@@ -183,7 +184,11 @@ final class SafariTests: JourneyTestCase {
 
 ## Watchdog
 
-If no `snap()` is called for 10 seconds, a watchdog timer automatically captures screenshots and AX trees. This ensures AI always has diagnostic artifacts even when a test hangs waiting for an element that never appears. Watchdog snaps are labeled `watchdog` in the artifact filenames.
+If no `snap()` is called for 10 seconds (default), the watchdog captures screenshots + AX trees, then fails the test. This prevents tests from hanging silently and ensures AI always has artifacts to diagnose the stuck state. Override `watchdogTimeout` to adjust:
+
+```swift
+override var watchdogTimeout: TimeInterval { 30 } // 30s instead of 10
+```
 
 ## Running tests
 

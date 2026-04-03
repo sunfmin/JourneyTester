@@ -21,6 +21,9 @@ open class JourneyTestCase: XCTestCase {
     /// Max depth for AX tree traversal.
     open var axTreeDepth: Int { 8 }
 
+    /// Seconds without a `snap()` before the watchdog fails the test. Default 10.
+    open var watchdogTimeout: TimeInterval { 10 }
+
     // MARK: - Public state
 
     nonisolated(unsafe) public lazy var app: XCUIApplication = {
@@ -411,8 +414,12 @@ open class JourneyTestCase: XCTestCase {
                 guard self.app.windows.count > 0,
                       self.app.windows.firstMatch.exists else { return }
                 let gap = Date().timeIntervalSince(self.lastSnapDate)
-                if gap > 10 {
-                    self.snap("watchdog")
+                if gap > self.watchdogTimeout {
+                    self.snap("WATCHDOG-TIMEOUT")
+                    XCTFail("""
+                        Watchdog timeout: no snap() called for \(Int(gap))s (limit: \(Int(self.watchdogTimeout))s).
+                        The test may be stuck. See artifacts: \(self.artifactDir)/
+                        """)
                 }
             }
         }
