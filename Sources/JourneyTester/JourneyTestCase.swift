@@ -364,9 +364,6 @@ open class JourneyTestCase: XCTestCase {
 
         if let t = title, !t.isEmpty {
             line += " \"\(t)\""
-        } else if title == nil, value == nil, identifier == nil {
-            // Unnamed separator (e.g. menu divider)
-            line += " ---"
         }
 
         if let id = identifier, !id.isEmpty {
