@@ -87,6 +87,12 @@ open class JourneyTestCase: XCTestCase {
 
         app.launch()
 
+        // Close all existing windows to start clean — previous runs may leave them open.
+        while app.windows.count > 1 {
+            app.typeKey("w", modifierFlags: .command)
+            usleep(200_000)
+        }
+
         if app.windows.count == 0 {
             app.typeKey("n", modifierFlags: .command)
         }
@@ -490,6 +496,16 @@ open class JourneyTestCase: XCTestCase {
     // MARK: - Private helpers
 
     private func captureScreenshots(tag: String) {
+        // Full screen capture — includes popups, dropdowns, menus
+        let fullScreen = XCUIScreen.main.screenshot()
+        let fullAttachment = XCTAttachment(screenshot: fullScreen)
+        fullAttachment.name = "\(journeyName)-\(tag)-screen"
+        fullAttachment.lifetime = .keepAlways
+        add(fullAttachment)
+        let screenPath = "\(artifactDir)/\(tag)-screen.png"
+        try? fullScreen.pngRepresentation.write(to: URL(fileURLWithPath: screenPath))
+
+        // Per-window captures
         let windowCount = app.windows.count
         for i in 0..<windowCount {
             let window = app.windows.element(boundBy: i)
