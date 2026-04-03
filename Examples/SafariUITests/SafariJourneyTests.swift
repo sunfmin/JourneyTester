@@ -6,13 +6,9 @@ final class SafariJourneyTests: JourneyTestCase {
     override var appBundleID: String? { "com.apple.Safari" }
 
     func testSafariJourney() {
-        step("open new window") {
+        step("open new window and navigate to apple.com", timeout: 15, slowOkReason: "page loading") {
             app.typeKey("n", modifierFlags: .command)
             sleep(1)
-            snap("new-window")
-        }
-
-        step("navigate to apple.com", timeout: 15, slowOkReason: "page loading") {
             app.typeKey("l", modifierFlags: .command)
             sleep(1)
             app.typeText("https://www.apple.com\n")
@@ -45,19 +41,15 @@ final class SafariJourneyTests: JourneyTestCase {
             snap("ipad-page")
         }
 
-        step("switch to iPhone tab") {
+        step("switch between tabs", timeout: 10, slowOkReason: "switching tabs") {
             app.typeKey("1", modifierFlags: [.command])
             sleep(1)
             snap("back-to-iphone")
-        }
 
-        step("switch to Mac tab") {
             app.typeKey("2", modifierFlags: [.command])
             sleep(1)
             snap("back-to-mac")
-        }
 
-        step("switch to iPad tab") {
             app.typeKey("3", modifierFlags: [.command])
             sleep(1)
             snap("back-to-ipad")
