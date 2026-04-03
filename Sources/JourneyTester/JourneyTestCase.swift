@@ -56,9 +56,6 @@ open class JourneyTestCase: XCTestCase {
     private var lastSnapDate = Date()
     private var watchdogTimer: Timer?
 
-    /// Previous snap's tree nodes, keyed for diffing.
-    private var previousTreeNodes: [String: AXNode] = [:]
-    private var isFirstSnap = true
 
     private var outputRoot: String {
         if let env = ProcessInfo.processInfo.environment["JOURNEY_TESTER_OUTPUT"] {
@@ -103,8 +100,6 @@ open class JourneyTestCase: XCTestCase {
         }
 
         lastSnapDate = Date()
-        isFirstSnap = true
-        previousTreeNodes = [:]
         startWatchdog()
 
         let resolvedPath = (artifactDir as NSString).resolvingSymlinksInPath
@@ -151,20 +146,8 @@ open class JourneyTestCase: XCTestCase {
         captureScreenshots(tag: tag)
         app.activate()
 
-        let currentNodes = collectAXNodes()
-
-        // Always write the full tree
-        let tree = renderFullTree(nodes: currentNodes)
-        writeArtifact("\(tag)-axtree.txt", content: tree)
-
-        // After the first snap, also write a diff showing what changed
-        if !isFirstSnap {
-            let diff = renderDiff(previous: previousTreeNodes, current: currentNodes, tag: tag)
-            writeArtifact("\(tag)-diff.txt", content: diff)
-        }
-
-        isFirstSnap = false
-        previousTreeNodes = currentNodes
+        // Dump each window as a separate file
+        dumpPerWindow(tag: tag)
     }
 
     // MARK: - Wait + Assert helpers
@@ -259,95 +242,47 @@ open class JourneyTestCase: XCTestCase {
         try? content.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
-    // MARK: - AX tree model
+    // MARK: - Per-window AX tree dump
 
-    /// A lightweight node for diffing. Keyed by its path in the tree.
-    private struct AXNode {
-        let role: String
-        let title: String?
-        let value: String?
-        let identifier: String?
-        let path: String       // e.g. "AXWindow 'Main' > AXToolbar > AXTextField"
-        let displayLine: String // e.g. "AXTextField value=\"https://...\" id=..."
-        let depth: Int
-    }
-
-    // MARK: - Collect nodes
-
-    private func collectAXNodes() -> [String: AXNode] {
+    /// Dumps each window's AX tree into a separate file:
+    ///   006-page-loaded-w0-axtree.txt  (or just -axtree.txt if single window)
+    private func dumpPerWindow(tag: String) {
         MainActor.assumeIsolated {
-            guard let root = Element.focusedApplication() else {
-                return [:]
+            guard let appElement = Element.focusedApplication() else {
+                writeArtifact("\(tag)-axtree.txt", content: "// no focused application")
+                return
             }
-            var nodes: [String: AXNode] = [:]
-            var visited = Set<UInt>()
-            collectNodes(element: root, depth: 0, pathParts: [], nodes: &nodes, visited: &visited)
-            return nodes
-        }
-    }
 
-    @MainActor
-    private func collectNodes(
-        element: Element,
-        depth: Int,
-        pathParts: [String],
-        nodes: inout [String: AXNode],
-        visited: inout Set<UInt>
-    ) {
-        guard depth <= axTreeDepth else { return }
-        let hash = CFHash(element.underlyingElement)
-        guard visited.insert(hash).inserted else { return }
+            // Get windows via kAXWindowsAttribute
+            let windows: [AXUIElement] = appElement.attribute(
+                Attribute(AXAttributeNames.kAXWindowsAttribute)) ?? []
 
-        let role = element.role() ?? "AXUnknown"
-        let title = element.title()
-        let value: String? = {
-            if let v: String = element.attribute(Attribute<String>("AXValue")),
-               !v.isEmpty, v.count < 200 { return v }
-            return nil
-        }()
-        let identifier = element.identifier()
-        let children = element.children(strict: true) ?? []
-
-        var pathLabel = role
-        if let t = title, !t.isEmpty { pathLabel += " \"\(t.prefix(40))\"" }
-        else if let id = identifier, !id.isEmpty { pathLabel += " id=\(id.prefix(40))" }
-
-        let currentPath = (pathParts + [pathLabel]).joined(separator: " > ")
-
-        let indent = String(repeating: "  ", count: depth)
-        var displayLine = "\(indent)\(role)"
-        if let t = title, !t.isEmpty { displayLine += " \"\(t)\"" }
-        if let v = value, !v.isEmpty, v != title { displayLine += " value=\"\(v)\"" }
-        if let id = identifier, !id.isEmpty { displayLine += " id=\(id)" }
-
-        let node = AXNode(
-            role: role, title: title, value: value, identifier: identifier,
-            path: currentPath, displayLine: displayLine, depth: depth
-        )
-        nodes[currentPath] = node
-
-        for child in children {
-            collectNodes(element: child, depth: depth + 1,
-                         pathParts: pathParts + [pathLabel],
-                         nodes: &nodes, visited: &visited)
-        }
-    }
-
-    // MARK: - Render full tree (compact Playwright-style)
-
-    private func renderFullTree(nodes: [String: AXNode]) -> String {
-        return MainActor.assumeIsolated {
-            guard let root = Element.focusedApplication() else {
-                return "// AX tree unavailable — no focused application"
+            if windows.isEmpty {
+                // Fallback: dump the app root
+                var lines: [String] = []
+                var visited = Set<UInt>()
+                renderTree(element: appElement, depth: 0, lines: &lines, visited: &visited)
+                writeArtifact("\(tag)-axtree.txt", content: lines.joined(separator: "\n"))
+                return
             }
-            var lines: [String] = []
-            var visited = Set<UInt>()
-            renderTree(element: root, depth: 0, lines: &lines, visited: &visited)
-            return lines.joined(separator: "\n")
+
+            for (i, winRef) in windows.enumerated() {
+                let winElement = Element(winRef)
+                let winTitle = winElement.title() ?? "Window \(i)"
+                var lines: [String] = []
+                var visited = Set<UInt>()
+                renderTree(element: winElement, depth: 0, lines: &lines, visited: &visited)
+
+                let suffix = windows.count > 1 ? "-w\(i)" : ""
+                let filename = "\(tag)\(suffix)-axtree.txt"
+                let header = "// Window \(i): \(winTitle)\n"
+                writeArtifact(filename, content: header + lines.joined(separator: "\n"))
+            }
         }
     }
 
-    /// Strips the "AX" prefix from role names: "AXButton" → "Button"
+    // MARK: - Tree rendering (compact Playwright-style)
+
     private func shortRole(_ role: String) -> String {
         if role.hasPrefix("AX"), role.count > 2 {
             return String(role.dropFirst(2))
@@ -355,8 +290,6 @@ open class JourneyTestCase: XCTestCase {
         return role
     }
 
-    /// Formats one element as a compact line:
-    ///   Button "Save" #save-btn [value="yes", focused]
     private func formatNodeLine(role: String, title: String?, value: String?,
                                 identifier: String?, indent: String) -> String {
         let short = shortRole(role)
@@ -400,33 +333,27 @@ open class JourneyTestCase: XCTestCase {
         let hasValue = value != nil
 
         if hasTitle || hasId || hasValue {
-            // Actionable node — render it
             let indent = String(repeating: "  ", count: depth)
             let line = formatNodeLine(role: role, title: title, value: value,
                                       identifier: identifier, indent: indent)
             lines.append(line)
-            // Render children at deeper indent
             renderChildren(children, depth: depth + 1, lines: &lines, visited: &visited)
         } else {
-            // No title, no id, no value — skip this node, promote children
+            // Skip unlabeled nodes, promote children
             renderChildren(children, depth: depth, lines: &lines, visited: &visited)
         }
     }
 
-    /// Renders children with sibling collapsing:
-    /// If 5+ consecutive siblings share the same role, show first 3,
-    /// a "... (N more Type)" line, and the last one.
+    /// Collapses 5+ consecutive same-role siblings: first 3, "... (N more)", last 1.
     @MainActor
     private func renderChildren(
         _ children: [Element], depth: Int, lines: inout [String], visited: inout Set<UInt>
     ) {
-        // Group consecutive children by role
         var i = 0
         while i < children.count {
             let child = children[i]
             let childRole = child.role() ?? "AXUnknown"
 
-            // Count consecutive siblings with same role
             var runEnd = i + 1
             while runEnd < children.count, (children[runEnd].role() ?? "") == childRole {
                 runEnd += 1
@@ -434,13 +361,11 @@ open class JourneyTestCase: XCTestCase {
             let runLength = runEnd - i
 
             if runLength >= 5 {
-                // Show first 3
                 for j in i..<(i + 3) {
                     renderTree(element: children[j], depth: depth, lines: &lines, visited: &visited)
                 }
                 let indent = String(repeating: "  ", count: depth)
                 lines.append("\(indent)... (\(runLength - 4) more \(shortRole(childRole)))")
-                // Show last 1
                 renderTree(element: children[runEnd - 1], depth: depth, lines: &lines, visited: &visited)
                 i = runEnd
             } else {
@@ -448,124 +373,6 @@ open class JourneyTestCase: XCTestCase {
                 i += 1
             }
         }
-    }
-
-    // MARK: - Render diff (unified diff format)
-
-    /// Produces a standard unified diff between the previous and current full tree text.
-    private func renderDiff(previous: [String: AXNode], current: [String: AXNode], tag: String) -> String {
-        let prevTree = renderNodesAsLines(previous)
-        let curTree = renderNodesAsLines(current)
-
-        if prevTree == curTree {
-            return "// No changes from previous snap\n"
-        }
-
-        return unifiedDiff(oldLines: prevTree, newLines: curTree,
-                           oldLabel: "previous", newLabel: tag)
-    }
-
-    /// Render nodes to ordered lines for diffing (uses stored displayLines sorted by path).
-    private func renderNodesAsLines(_ nodes: [String: AXNode]) -> [String] {
-        nodes.values
-            .sorted { $0.path < $1.path }
-            .map { $0.displayLine }
-    }
-
-    /// Produces a unified diff (like `diff -u`) between two arrays of lines.
-    private func unifiedDiff(oldLines: [String], newLines: [String],
-                             oldLabel: String, newLabel: String) -> String {
-        // Simple LCS-based unified diff
-        let old = oldLines
-        let new = newLines
-
-        // Build LCS table
-        let m = old.count, n = new.count
-        // For very large trees, use a hash-based approach to avoid O(m*n) memory
-        if m * n > 5_000_000 {
-            // Fallback: just show additions and removals without context
-            return fallbackDiff(old: old, new: new, oldLabel: oldLabel, newLabel: newLabel)
-        }
-
-        var dp = Array(repeating: Array(repeating: 0, count: n + 1), count: m + 1)
-        for i in 1...m {
-            for j in 1...n {
-                if old[i-1] == new[j-1] {
-                    dp[i][j] = dp[i-1][j-1] + 1
-                } else {
-                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
-                }
-            }
-        }
-
-        // Backtrack to produce diff lines
-        var result: [String] = []
-        result.append("--- \(oldLabel)")
-        result.append("+++ \(newLabel)")
-
-        var i = m, j = n
-        var diffLines: [String] = []
-        while i > 0 || j > 0 {
-            if i > 0 && j > 0 && old[i-1] == new[j-1] {
-                diffLines.append(" \(old[i-1])")
-                i -= 1; j -= 1
-            } else if j > 0 && (i == 0 || dp[i][j-1] >= dp[i-1][j]) {
-                diffLines.append("+\(new[j-1])")
-                j -= 1
-            } else {
-                diffLines.append("-\(old[i-1])")
-                i -= 1
-            }
-        }
-        diffLines.reverse()
-
-        // Output with context (3 lines around changes, like diff -U3)
-        var outputLines: [String] = []
-        let contextSize = 3
-        var changeRanges: [Int] = []
-        for (idx, line) in diffLines.enumerated() {
-            if line.hasPrefix("+") || line.hasPrefix("-") {
-                changeRanges.append(idx)
-            }
-        }
-
-        if changeRanges.isEmpty {
-            return "// No changes from previous snap\n"
-        }
-
-        var shown = Set<Int>()
-        for idx in changeRanges {
-            for c in max(0, idx - contextSize)...min(diffLines.count - 1, idx + contextSize) {
-                shown.insert(c)
-            }
-        }
-
-        var lastShown = -2
-        for idx in 0..<diffLines.count {
-            guard shown.contains(idx) else { continue }
-            if idx > lastShown + 1 {
-                outputLines.append("@@")
-            }
-            outputLines.append(diffLines[idx])
-            lastShown = idx
-        }
-
-        result.append(contentsOf: outputLines)
-        return result.joined(separator: "\n")
-    }
-
-    private func fallbackDiff(old: [String], new: [String],
-                              oldLabel: String, newLabel: String) -> String {
-        let oldSet = Set(old)
-        let newSet = Set(new)
-        var lines = ["--- \(oldLabel)", "+++ \(newLabel)", "@@"]
-        for line in old where !newSet.contains(line) {
-            lines.append("-\(line)")
-        }
-        for line in new where !oldSet.contains(line) {
-            lines.append("+\(line)")
-        }
-        return lines.joined(separator: "\n")
     }
 
     // MARK: - Private helpers
