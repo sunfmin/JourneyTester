@@ -2,45 +2,32 @@ import JourneyTester
 import XCTest
 
 final class SafariJourneyTests: JourneyTestCase {
-    override var journeyName: String { "safari-basics" }
+    override var journeyName: String { "safari" }
     override var appBundleID: String? { "com.apple.Safari" }
 
-    func testNavigateToURL() {
+    func testSafariJourney() {
         step("open new window") {
             app.typeKey("n", modifierFlags: .command)
             sleep(1)
-            snap("new-window-opened")
+            snap("new-window")
         }
 
         step("focus address bar") {
             app.typeKey("l", modifierFlags: .command)
             sleep(1)
-            snap("address-bar-focused")
         }
 
-        step("type URL and navigate", timeout: 15, slowOkReason: "waiting for page to load") {
+        step("navigate to example.com", timeout: 15, slowOkReason: "page loading") {
             app.typeText("https://example.com\n")
             let webView = app.webViews.firstMatch
-            waitAndSnap(webView, timeout: 10, "Web view should exist after navigation")
-            snap("page-loaded")
+            waitAndSnap(webView, timeout: 10, "Web view should exist")
+            snap("example-loaded")
         }
 
         step("verify page content") {
             let response = axQuery(role: "AXStaticText", title: "Example Domain")
             snap("verified-content")
-
-            if case .success = response {
-                // Found "Example Domain" via AXorcist
-            }
-        }
-    }
-
-    func testMultipleTabs() {
-        step("open first tab", timeout: 15, slowOkReason: "loading example.com") {
-            app.typeKey("l", modifierFlags: .command)
-            app.typeText("https://example.com\n")
-            sleep(3)
-            snap("first-tab-loaded")
+            if case .success = response {}
         }
 
         step("open second tab", timeout: 15, slowOkReason: "loading apple.com") {
@@ -48,7 +35,7 @@ final class SafariJourneyTests: JourneyTestCase {
             sleep(1)
             app.typeText("https://www.apple.com\n")
             sleep(3)
-            snap("second-tab-loaded")
+            snap("apple-loaded")
         }
 
         step("switch back to first tab") {
@@ -57,27 +44,19 @@ final class SafariJourneyTests: JourneyTestCase {
             snap("switched-to-first-tab")
         }
 
-        step("verify tab count") {
-            snap("tab-group-state")
-        }
-    }
-
-    func testAddressBarSearch() {
-        step("focus address bar") {
+        step("search from address bar", timeout: 10, slowOkReason: "waiting for suggestions") {
             app.typeKey("l", modifierFlags: .command)
             sleep(1)
-        }
-
-        step("type search query", timeout: 10, slowOkReason: "waiting for search suggestions") {
             app.typeText("swift programming language")
             sleep(2)
-            snap("search-suggestions-visible")
+            snap("search-suggestions")
         }
 
-        step("submit search", timeout: 20, slowOkReason: "waiting for search results page") {
+        step("submit search", timeout: 20, slowOkReason: "waiting for search results") {
             app.typeKey(.return, modifierFlags: [])
             let webView = app.webViews.firstMatch
-            waitAndSnap(webView, timeout: 15, "Search results page should load")
+            waitAndSnap(webView, timeout: 15, "Search results should load")
+            snap("search-results")
         }
     }
 }
