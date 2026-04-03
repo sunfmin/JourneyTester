@@ -5,19 +5,12 @@ import XCTest
 
 /// Base class for UI tests designed to be debugged by AI agents.
 ///
-/// Every snap captures:
-/// - A screenshot (PNG) per window
-/// - An accessibility tree — full on first snap, then diffs only
+/// Every `snap()` captures per window:
+/// - A screenshot (PNG)
+/// - A compact accessibility tree (TXT)
 ///
-/// Example output for step 3:
-/// ```
-/// === Snap 003: step-type-URL ===
-/// [CHANGED] AXWindow "..." > AXToolbar > AXTextField id=WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD
-///   value: "" → "https://example.com"
-/// [ADDED]   AXWindow "Example Domain" > AXWebArea > AXHeading "Example Domain"
-/// [ADDED]   AXWindow "Example Domain" > AXWebArea > AXStaticText value="This domain is..."
-/// [REMOVED] AXWindow "Start Page" > ... > AXList id=StartPageOnboardingSection
-/// ```
+/// If no `snap()` is called for 10+ seconds, a watchdog auto-captures
+/// both artifacts so AI always has context even if a test hangs.
 open class JourneyTestCase: XCTestCase {
 
     // MARK: - Override points
@@ -133,9 +126,7 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Snap
 
-    /// Captures screenshots + AX tree artifact.
-    /// First snap writes the full tree. Subsequent snaps write only the diff.
-    /// On failure snaps (label starts with "FAIL"), the full tree is always written.
+    /// Captures screenshots + AX tree per window.
     public func snap(_ label: String) {
         screenshotIndex += 1
         lastSnapDate = Date()

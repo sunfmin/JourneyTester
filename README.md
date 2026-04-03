@@ -181,6 +181,10 @@ final class SafariTests: JourneyTestCase {
 | `axQuery(role:title:identifier:)` | Query AXorcist for elements |
 | `writeArtifact("file", content)` | Write custom artifact to journey dir |
 
+## Watchdog
+
+If no `snap()` is called for 10 seconds, a watchdog timer automatically captures screenshots and AX trees. This ensures AI always has diagnostic artifacts even when a test hangs waiting for an element that never appears. Watchdog snaps are labeled `watchdog` in the artifact filenames.
+
 ## Running tests
 
 ```bash
