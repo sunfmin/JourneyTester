@@ -370,13 +370,8 @@ open class JourneyTestCase: XCTestCase {
             line += " #\(id)"
         }
 
-        // Attributes in brackets
-        var attrs: [String] = []
         if let v = value, !v.isEmpty, v != title {
-            attrs.append("value=\"\(v)\"")
-        }
-        if !attrs.isEmpty {
-            line += " [\(attrs.joined(separator: ", "))]"
+            line += " =\"\(v)\""
         }
 
         return line
