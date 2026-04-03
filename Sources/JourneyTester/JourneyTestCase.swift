@@ -270,6 +270,31 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
+    /// Waits for an element to disappear, polling every 0.5s.
+    /// Snaps on failure (element still exists after timeout).
+    public func waitGoneAndSnap(
+        _ element: XCUIElement,
+        timeout: TimeInterval = 5,
+        _ message: String,
+        file: StaticString = #file,
+        line: UInt = #line
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while element.exists && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        if element.exists {
+            snap("FAIL-still-\(sanitize(element.identifier))")
+            XCTFail("""
+                \(message)
+
+                Element '\(element.identifier)' still exists after \(timeout)s.
+                Artifacts: \(artifactDir)/
+                """, file: file, line: line)
+        }
+    }
+
     public func assertExists(
         _ element: XCUIElement,
         _ message: String,
