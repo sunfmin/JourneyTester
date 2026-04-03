@@ -219,7 +219,7 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Snap
 
-    /// Captures screenshots + AX tree per window.
+    /// Captures screenshots. AX tree is only dumped on error/failure snaps.
     public func snap(_ label: String) {
         screenshotIndex += 1
         lastSnapDate = Date()
@@ -229,7 +229,14 @@ open class JourneyTestCase: XCTestCase {
 
         app.activate()
         captureScreenshots(tag: tag)
-        dumpPerWindow(tag: tag)
+
+        let isError = label.hasPrefix("FAIL")
+            || label.hasPrefix("SLOW")
+            || label.hasPrefix("WATCHDOG")
+            || label.hasPrefix("TEARDOWN")
+        if isError {
+            dumpPerWindow(tag: tag)
+        }
     }
 
     // MARK: - Wait + Assert helpers
