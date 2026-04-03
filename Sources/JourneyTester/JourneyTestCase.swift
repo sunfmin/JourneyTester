@@ -400,13 +400,22 @@ open class JourneyTestCase: XCTestCase {
         let identifier = element.identifier()
         let children = element.children(strict: true) ?? []
 
-        let indent = String(repeating: "  ", count: depth)
-        let line = formatNodeLine(role: role, title: title, value: value,
-                                  identifier: identifier, indent: indent)
-        lines.append(line)
+        let hasTitle = title != nil && title?.isEmpty == false
+        let hasId = identifier != nil && identifier?.isEmpty == false
+        let hasValue = value != nil
 
-        // Group consecutive children by role for collapsing
-        renderChildren(children, depth: depth + 1, lines: &lines, visited: &visited)
+        if hasTitle || hasId || hasValue {
+            // Actionable node — render it
+            let indent = String(repeating: "  ", count: depth)
+            let line = formatNodeLine(role: role, title: title, value: value,
+                                      identifier: identifier, indent: indent)
+            lines.append(line)
+            // Render children at deeper indent
+            renderChildren(children, depth: depth + 1, lines: &lines, visited: &visited)
+        } else {
+            // No title, no id, no value — skip this node, promote children
+            renderChildren(children, depth: depth, lines: &lines, visited: &visited)
+        }
     }
 
     /// Renders children with sibling collapsing:
