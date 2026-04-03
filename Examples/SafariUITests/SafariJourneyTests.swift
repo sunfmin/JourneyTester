@@ -12,51 +12,64 @@ final class SafariJourneyTests: JourneyTestCase {
             snap("new-window")
         }
 
-        step("focus address bar") {
+        step("navigate to apple.com", timeout: 15, slowOkReason: "page loading") {
             app.typeKey("l", modifierFlags: .command)
-            sleep(1)
-        }
-
-        step("navigate to example.com", timeout: 15, slowOkReason: "page loading") {
-            app.typeText("https://example.com\n")
-            let webView = app.webViews.firstMatch
-            waitAndSnap(webView, timeout: 10, "Web view should exist")
-            snap("example-loaded")
-        }
-
-        step("verify page content") {
-            let response = axQuery(role: "AXStaticText", title: "Example Domain")
-            snap("verified-content")
-            if case .success = response {}
-        }
-
-        step("open second tab", timeout: 15, slowOkReason: "loading apple.com") {
-            app.typeKey("t", modifierFlags: .command)
             sleep(1)
             app.typeText("https://www.apple.com\n")
-            sleep(3)
-            snap("apple-loaded")
+            let webView = app.webViews.firstMatch
+            waitAndSnap(webView, timeout: 10, "Apple homepage should load")
+            snap("apple-homepage")
         }
 
-        step("switch back to first tab") {
-            app.typeKey("1", modifierFlags: [.command])
-            sleep(1)
-            snap("switched-to-first-tab")
-        }
-
-        step("search from address bar", timeout: 10, slowOkReason: "waiting for suggestions") {
+        step("go to iPhone page", timeout: 15, slowOkReason: "page loading") {
             app.typeKey("l", modifierFlags: .command)
             sleep(1)
-            app.typeText("swift programming language")
-            sleep(2)
-            snap("search-suggestions")
+            app.typeText("https://www.apple.com/iphone\n")
+            sleep(3)
+            snap("iphone-page")
         }
 
-        step("submit search", timeout: 20, slowOkReason: "waiting for search results") {
-            app.typeKey(.return, modifierFlags: [])
+        step("go to Mac page in new tab", timeout: 15, slowOkReason: "page loading") {
+            app.typeKey("t", modifierFlags: .command)
+            sleep(1)
+            app.typeText("https://www.apple.com/mac\n")
+            sleep(3)
+            snap("mac-page")
+        }
+
+        step("go to iPad page in new tab", timeout: 15, slowOkReason: "page loading") {
+            app.typeKey("t", modifierFlags: .command)
+            sleep(1)
+            app.typeText("https://www.apple.com/ipad\n")
+            sleep(3)
+            snap("ipad-page")
+        }
+
+        step("switch to iPhone tab") {
+            app.typeKey("1", modifierFlags: [.command])
+            sleep(1)
+            snap("back-to-iphone")
+        }
+
+        step("switch to Mac tab") {
+            app.typeKey("2", modifierFlags: [.command])
+            sleep(1)
+            snap("back-to-mac")
+        }
+
+        step("switch to iPad tab") {
+            app.typeKey("3", modifierFlags: [.command])
+            sleep(1)
+            snap("back-to-ipad")
+        }
+
+        step("search apple store", timeout: 20, slowOkReason: "waiting for search results") {
+            app.typeKey("l", modifierFlags: .command)
+            sleep(1)
+            app.typeText("https://www.apple.com/shop\n")
             let webView = app.webViews.firstMatch
-            waitAndSnap(webView, timeout: 15, "Search results should load")
-            snap("search-results")
+            waitAndSnap(webView, timeout: 15, "Apple Store should load")
+            snap("apple-store")
         }
     }
 }
