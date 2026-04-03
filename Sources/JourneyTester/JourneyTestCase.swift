@@ -286,13 +286,6 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    private static let noiseRoles: Set<String> = [
-        "AXGroup", "AXGeneric", "AXSection", "AXArticle",
-        "AXLayoutArea", "AXLayoutItem", "AXSplitGroup",
-    ]
-
-    private static let maxChildrenShown = 5
-
     @MainActor
     private func collectNodes(
         element: Element,
@@ -315,33 +308,17 @@ open class JourneyTestCase: XCTestCase {
         let identifier = element.identifier()
         let children = element.children(strict: true) ?? []
 
-        let hasLabel = (title != nil && title?.isEmpty == false)
-            || value != nil
-            || (identifier != nil && identifier?.isEmpty == false)
-
-        // Noise containers: skip but recurse into children with same path
-        if Self.noiseRoles.contains(role), !hasLabel {
-            for (i, child) in children.enumerated() {
-                if i >= Self.maxChildrenShown { break }
-                collectNodes(element: child, depth: depth, pathParts: pathParts,
-                             nodes: &nodes, visited: &visited)
-            }
-            return
-        }
-
-        // Build a human-readable key for this node
         var pathLabel = role
         if let t = title, !t.isEmpty { pathLabel += " \"\(t.prefix(40))\"" }
         else if let id = identifier, !id.isEmpty { pathLabel += " id=\(id.prefix(40))" }
 
         let currentPath = (pathParts + [pathLabel]).joined(separator: " > ")
 
-        // Build display line
         let indent = String(repeating: "  ", count: depth)
         var displayLine = "\(indent)\(role)"
-        if let t = title, !t.isEmpty { displayLine += " \"\(t.prefix(80))\"" }
-        if let v = value, !v.isEmpty, v != title { displayLine += " value=\"\(v.prefix(80))\"" }
-        if let id = identifier, !id.isEmpty { displayLine += " id=\(id.prefix(60))" }
+        if let t = title, !t.isEmpty { displayLine += " \"\(t)\"" }
+        if let v = value, !v.isEmpty, v != title { displayLine += " value=\"\(v)\"" }
+        if let id = identifier, !id.isEmpty { displayLine += " id=\(id)" }
 
         let node = AXNode(
             role: role, title: title, value: value, identifier: identifier,
@@ -349,16 +326,7 @@ open class JourneyTestCase: XCTestCase {
         )
         nodes[currentPath] = node
 
-        for (i, child) in children.enumerated() {
-            if i >= Self.maxChildrenShown {
-                let truncPath = currentPath + " > ... (\(children.count - Self.maxChildrenShown) more)"
-                let truncLine = "\(indent)  ... and \(children.count - Self.maxChildrenShown) more children"
-                nodes[truncPath] = AXNode(
-                    role: "...", title: nil, value: nil, identifier: nil,
-                    path: truncPath, displayLine: truncLine, depth: depth + 1
-                )
-                break
-            }
+        for child in children {
             collectNodes(element: child, depth: depth + 1,
                          pathParts: pathParts + [pathLabel],
                          nodes: &nodes, visited: &visited)
@@ -367,11 +335,8 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Render full tree
 
+    /// Renders the full tree from collected nodes, preserving tree order.
     private func renderFullTree(nodes: [String: AXNode]) -> String {
-        let sorted = nodes.values.sorted { a, b in
-            a.displayLine.compare(b.displayLine, options: .literal) == .orderedAscending
-        }
-        // Re-render by collecting from scratch to preserve tree order
         return MainActor.assumeIsolated {
             guard let root = Element.focusedApplication() else {
                 return "// AX tree unavailable — no focused application"
@@ -401,84 +366,133 @@ open class JourneyTestCase: XCTestCase {
         let identifier = element.identifier()
         let children = element.children(strict: true) ?? []
 
-        let hasLabel = (title != nil && title?.isEmpty == false)
-            || value != nil
-            || (identifier != nil && identifier?.isEmpty == false)
-
-        if Self.noiseRoles.contains(role), !hasLabel {
-            for (i, child) in children.enumerated() {
-                if i >= Self.maxChildrenShown {
-                    let indent = String(repeating: "  ", count: depth)
-                    lines.append("\(indent)... and \(children.count - Self.maxChildrenShown) more")
-                    break
-                }
-                renderTree(element: child, depth: depth, lines: &lines, visited: &visited)
-            }
-            return
-        }
-
         let indent = String(repeating: "  ", count: depth)
         var line = "\(indent)\(role)"
-        if let t = title, !t.isEmpty { line += " \"\(t.prefix(80))\"" }
-        if let v = value, !v.isEmpty, v != title { line += " value=\"\(v.prefix(80))\"" }
-        if let id = identifier, !id.isEmpty { line += " id=\(id.prefix(60))" }
+        if let t = title, !t.isEmpty { line += " \"\(t)\"" }
+        if let v = value, !v.isEmpty, v != title { line += " value=\"\(v)\"" }
+        if let id = identifier, !id.isEmpty { line += " id=\(id)" }
         lines.append(line)
 
-        for (i, child) in children.enumerated() {
-            if i >= Self.maxChildrenShown {
-                lines.append("\(indent)  ... and \(children.count - Self.maxChildrenShown) more children")
-                break
-            }
+        for child in children {
             renderTree(element: child, depth: depth + 1, lines: &lines, visited: &visited)
         }
     }
 
-    // MARK: - Render diff
+    // MARK: - Render diff (unified diff format)
 
+    /// Produces a standard unified diff between the previous and current full tree text.
     private func renderDiff(previous: [String: AXNode], current: [String: AXNode], tag: String) -> String {
-        var lines: [String] = []
+        let prevTree = renderNodesAsLines(previous)
+        let curTree = renderNodesAsLines(current)
 
-        // Changed: same path, different value/title
-        for (path, cur) in current {
-            if let prev = previous[path] {
-                var changes: [String] = []
-                if prev.title != cur.title {
-                    changes.append("title: \"\(prev.title ?? "")\" → \"\(cur.title ?? "")\"")
-                }
-                if prev.value != cur.value {
-                    changes.append("value: \"\(prev.value ?? "")\" → \"\(cur.value ?? "")\"")
-                }
-                if !changes.isEmpty {
-                    lines.append("[CHANGED] \(path)")
-                    for c in changes {
-                        lines.append("  \(c)")
-                    }
+        if prevTree == curTree {
+            return "// No changes from previous snap\n"
+        }
+
+        return unifiedDiff(oldLines: prevTree, newLines: curTree,
+                           oldLabel: "previous", newLabel: tag)
+    }
+
+    /// Render nodes to ordered lines for diffing (uses stored displayLines sorted by path).
+    private func renderNodesAsLines(_ nodes: [String: AXNode]) -> [String] {
+        nodes.values
+            .sorted { $0.path < $1.path }
+            .map { $0.displayLine }
+    }
+
+    /// Produces a unified diff (like `diff -u`) between two arrays of lines.
+    private func unifiedDiff(oldLines: [String], newLines: [String],
+                             oldLabel: String, newLabel: String) -> String {
+        // Simple LCS-based unified diff
+        let old = oldLines
+        let new = newLines
+
+        // Build LCS table
+        let m = old.count, n = new.count
+        // For very large trees, use a hash-based approach to avoid O(m*n) memory
+        if m * n > 5_000_000 {
+            // Fallback: just show additions and removals without context
+            return fallbackDiff(old: old, new: new, oldLabel: oldLabel, newLabel: newLabel)
+        }
+
+        var dp = Array(repeating: Array(repeating: 0, count: n + 1), count: m + 1)
+        for i in 1...m {
+            for j in 1...n {
+                if old[i-1] == new[j-1] {
+                    dp[i][j] = dp[i-1][j-1] + 1
+                } else {
+                    dp[i][j] = max(dp[i-1][j], dp[i][j-1])
                 }
             }
         }
 
-        // Added: in current but not in previous
-        let added = current.keys.filter { previous[$0] == nil }.sorted()
-        for path in added {
-            if let node = current[path] {
-                lines.append("[ADDED]   \(node.displayLine.trimmingCharacters(in: .whitespaces))")
-                lines.append("          at: \(path)")
+        // Backtrack to produce diff lines
+        var result: [String] = []
+        result.append("--- \(oldLabel)")
+        result.append("+++ \(newLabel)")
+
+        var i = m, j = n
+        var diffLines: [String] = []
+        while i > 0 || j > 0 {
+            if i > 0 && j > 0 && old[i-1] == new[j-1] {
+                diffLines.append(" \(old[i-1])")
+                i -= 1; j -= 1
+            } else if j > 0 && (i == 0 || dp[i][j-1] >= dp[i-1][j]) {
+                diffLines.append("+\(new[j-1])")
+                j -= 1
+            } else {
+                diffLines.append("-\(old[i-1])")
+                i -= 1
+            }
+        }
+        diffLines.reverse()
+
+        // Output with context (3 lines around changes, like diff -U3)
+        var outputLines: [String] = []
+        let contextSize = 3
+        var changeRanges: [Int] = []
+        for (idx, line) in diffLines.enumerated() {
+            if line.hasPrefix("+") || line.hasPrefix("-") {
+                changeRanges.append(idx)
             }
         }
 
-        // Removed: in previous but not in current
-        let removed = previous.keys.filter { current[$0] == nil }.sorted()
-        for path in removed {
-            if let node = previous[path] {
-                lines.append("[REMOVED] \(node.displayLine.trimmingCharacters(in: .whitespaces))")
-                lines.append("          was: \(path)")
+        if changeRanges.isEmpty {
+            return "// No changes from previous snap\n"
+        }
+
+        var shown = Set<Int>()
+        for idx in changeRanges {
+            for c in max(0, idx - contextSize)...min(diffLines.count - 1, idx + contextSize) {
+                shown.insert(c)
             }
         }
 
-        if lines.isEmpty {
-            return "// No changes from previous snap"
+        var lastShown = -2
+        for idx in 0..<diffLines.count {
+            guard shown.contains(idx) else { continue }
+            if idx > lastShown + 1 {
+                outputLines.append("@@")
+            }
+            outputLines.append(diffLines[idx])
+            lastShown = idx
         }
 
+        result.append(contentsOf: outputLines)
+        return result.joined(separator: "\n")
+    }
+
+    private func fallbackDiff(old: [String], new: [String],
+                              oldLabel: String, newLabel: String) -> String {
+        let oldSet = Set(old)
+        let newSet = Set(new)
+        var lines = ["--- \(oldLabel)", "+++ \(newLabel)", "@@"]
+        for line in old where !newSet.contains(line) {
+            lines.append("-\(line)")
+        }
+        for line in new where !oldSet.contains(line) {
+            lines.append("+\(line)")
+        }
         return lines.joined(separator: "\n")
     }
 
