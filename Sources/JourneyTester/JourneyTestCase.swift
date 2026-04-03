@@ -1,4 +1,5 @@
 @preconcurrency import AXorcist
+import ApplicationServices
 import Foundation
 import XCTest
 
@@ -6,40 +7,28 @@ import XCTest
 ///
 /// Every snap captures:
 /// - A screenshot (PNG) per window
-/// - The AXorcist accessibility tree (JSON) — structured, machine-parseable
+/// - A compact accessibility tree (TXT) — concise, AI-readable
 ///
-/// The AX tree depth is capped (default 3) so even huge apps like Safari
-/// won't crash the test runner. Increase via `axTreeDepth` when testing
-/// smaller apps.
-///
-/// ## Usage
-/// ```swift
-/// final class LoginTests: JourneyTestCase {
-///     override var journeyName: String { "login" }
-///     override var appBundleID: String? { "com.apple.Safari" }
-///
-///     func testLoginFlow() {
-///         step("tap login button") {
-///             let btn = app.buttons["Login"]
-///             waitAndSnap(btn, "Login button should exist")
-///             btn.tap()
-///         }
-///     }
-/// }
+/// Example tree output:
+/// ```
+/// AXApplication "Safari"
+///   AXWindow "Example Domain"
+///     AXToolbar
+///       AXButton "Back"
+///       AXTextField value="https://example.com"
+///     AXWebArea
+///       AXHeading "Example Domain"
+///       AXStaticText "This domain is for use in illustrative examples"
 /// ```
 open class JourneyTestCase: XCTestCase {
 
     // MARK: - Override points
 
-    /// Name of this journey. Used as the folder name for artifacts.
     open var journeyName: String { fatalError("Subclass must override journeyName") }
-
-    /// Bundle identifier of the app under test.
     open var appBundleID: String? { nil }
 
-    /// Max depth for AXorcist tree collection.
-    /// Override to go deeper or shallower depending on the app.
-    open var axTreeDepth: Int { 10 }
+    /// Max depth for AX tree traversal. Default 8 balances detail vs noise.
+    open var axTreeDepth: Int { 8 }
 
     // MARK: - Public state
 
@@ -81,8 +70,6 @@ open class JourneyTestCase: XCTestCase {
     override open func setUpWithError() throws {
         continueAfterFailure = false
 
-        // Check Accessibility permission — required for AXorcist to read the AX tree.
-        // Passing promptIfNeeded: true triggers the system dialog on first run.
         let trusted = MainActor.assumeIsolated {
             AXTrustUtil.checkAccessibilityPermissions(promptIfNeeded: true)
         }
@@ -96,7 +83,7 @@ open class JourneyTestCase: XCTestCase {
 
                 Please grant Accessibility access to the test runner:
                   System Settings → Privacy & Security → Accessibility
-                  → Enable "SafariUITests-Runner" (or your test runner app)
+                  → Enable your test runner app (e.g. SafariUITests-Runner)
 
                 Then re-run the tests. This is a one-time setup.
                 """)
@@ -133,8 +120,6 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Steps
 
-    /// Wraps a test phase with a name. Captures artifacts on entry; on failure
-    /// the step name appears in artifact filenames for easy diagnosis.
     public func step(_ name: String, file: StaticString = #file, line: UInt = #line, _ body: () throws -> Void) {
         let safeName = sanitize(name)
         snap("step-\(safeName)-begin")
@@ -149,7 +134,6 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Snap
 
-    /// Captures screenshots + AXorcist tree, written to the artifact directory.
     public func snap(_ label: String) {
         screenshotIndex += 1
         lastSnapDate = Date()
@@ -159,17 +143,14 @@ open class JourneyTestCase: XCTestCase {
 
         captureScreenshots(tag: tag)
 
-        // Ensure the app under test is focused so AXorcist's "focused app"
-        // lookup finds it (xctrunner sandbox blocks bundle ID lookups).
         app.activate()
 
         let tree = dumpAXTree()
-        writeArtifact("\(tag)-axtree.json", content: tree)
+        writeArtifact("\(tag)-axtree.txt", content: tree)
     }
 
     // MARK: - Wait + Assert helpers
 
-    /// Waits for an element to exist. On failure: screenshots + AX tree + inline tree in XCTFail.
     public func waitAndSnap(
         _ element: XCUIElement,
         timeout: TimeInterval = 5,
@@ -193,7 +174,6 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    /// Asserts an element exists right now, snapping on failure.
     public func assertExists(
         _ element: XCUIElement,
         _ message: String,
@@ -212,18 +192,11 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    /// Query AXorcist for an element by role/title/identifier.
-    ///
-    /// Uses `collectAll` internally (which is Safari-safe) then filters results,
-    /// rather than the `query` command whose traversal path crashes on Safari.
-    /// Uses the focused app (nil appIdentifier) because the xctrunner sandbox
-    /// blocks NSWorkspace.shared.runningApplications lookups by bundle ID.
     public func axQuery(
         role: String? = nil,
         title: String? = nil,
         identifier: String? = nil
     ) -> AXResponse {
-        // Ensure app is focused so AXorcist's "focused app" finds it.
         app.activate()
 
         return MainActor.assumeIsolated {
@@ -232,7 +205,6 @@ open class JourneyTestCase: XCTestCase {
             if let title { filter["AXTitle"] = title }
             if let identifier { filter["AXIdentifier"] = identifier }
 
-            // Use nil (focused app) — the xctrunner sandbox blocks bundle ID lookups.
             let cmd = CollectAllCommand(
                 appIdentifier: nil,
                 maxDepth: axTreeDepth,
@@ -244,7 +216,6 @@ open class JourneyTestCase: XCTestCase {
             )
             let response = AXorcist.shared.runCommand(envelope)
 
-            // Convert collectAll response: if elements found → success, else error
             if case .success(let payload, _) = response,
                let payload,
                let dict = payload.value as? [String: Any],
@@ -263,35 +234,33 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    // MARK: - AXorcist tree dump
+    // MARK: - AXorcist compact tree dump
 
-    /// Collects the AXorcist accessibility tree, depth-capped to `axTreeDepth`.
-    /// Returns pretty-printed JSON.
+    /// Builds a compact, indented text tree of the focused app's AX hierarchy.
+    ///
+    /// Output looks like:
+    /// ```
+    /// AXWindow "Example Domain"
+    ///   AXToolbar
+    ///     AXButton "Back"
+    ///     AXTextField value="https://example.com"
+    ///   AXWebArea
+    ///     AXHeading "Example Domain"
+    /// ```
+    ///
+    /// Only shows role + the first meaningful label (title > value > identifier).
+    /// Skips noise roles (AXGroup, AXGeneric) that have no label and only one child.
     public func dumpAXTree() -> String {
         MainActor.assumeIsolated {
-            // Use nil (focused app) — xctrunner sandbox blocks bundle ID lookups.
-            let cmd = CollectAllCommand(appIdentifier: nil, maxDepth: axTreeDepth)
-            let envelope = AXCommandEnvelope(
-                commandID: "journey-dump-\(screenshotIndex)",
-                command: .collectAll(cmd)
-            )
-            let response = AXorcist.shared.runCommand(envelope)
-
-            switch response {
-            case .success(let payload, _):
-                if let payload {
-                    let encoder = JSONEncoder()
-                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                    if let data = try? encoder.encode(payload),
-                       let json = String(data: data, encoding: .utf8)
-                    {
-                        return json
-                    }
-                }
-                return "{\"status\": \"success\", \"note\": \"no payload\"}"
-            case .error(let message, let code, _):
-                return "{\"status\": \"error\", \"code\": \"\(code.rawValue)\", \"message\": \"\(message)\"}"
+            guard let root = Element.focusedApplication() else {
+                return "// AX tree unavailable — no focused application"
             }
+
+            var lines: [String] = []
+            var visited = Set<UInt>()
+            buildCompactTree(element: root, depth: 0, maxDepth: axTreeDepth,
+                             lines: &lines, visited: &visited)
+            return lines.joined(separator: "\n")
         }
     }
 
@@ -300,6 +269,87 @@ open class JourneyTestCase: XCTestCase {
     public func writeArtifact(_ filename: String, content: String) {
         let path = "\(artifactDir)/\(filename)"
         try? content.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - Private: compact tree builder
+
+    /// Roles that are pure layout noise — skip if unlabeled (promote children).
+    private static let noiseRoles: Set<String> = [
+        "AXGroup", "AXGeneric", "AXSection", "AXArticle",
+        "AXLayoutArea", "AXLayoutItem", "AXSplitGroup",
+    ]
+
+    /// Max children shown per parent before truncating with "... and N more".
+    private static let maxChildrenShown = 5
+
+    @MainActor
+    private func buildCompactTree(
+        element: Element,
+        depth: Int,
+        maxDepth: Int,
+        lines: inout [String],
+        visited: inout Set<UInt>
+    ) {
+        guard depth <= maxDepth else { return }
+
+        let hash = CFHash(element.underlyingElement)
+        guard visited.insert(hash).inserted else { return }
+
+        let role = element.role() ?? "AXUnknown"
+        let title = element.title()
+        let value: String? = {
+            if let v: String = element.attribute(Attribute<String>("AXValue")),
+               !v.isEmpty, v.count < 200 { return v }
+            return nil
+        }()
+        let identifier = element.identifier()
+
+        let children = element.children(strict: true) ?? []
+
+        let hasLabel = (title != nil && title?.isEmpty == false)
+            || value != nil
+            || (identifier != nil && identifier?.isEmpty == false)
+
+        // Skip noise containers that add no information — promote children
+        if Self.noiseRoles.contains(role), !hasLabel {
+            for (i, child) in children.enumerated() {
+                if i >= Self.maxChildrenShown {
+                    let indent = String(repeating: "  ", count: depth)
+                    lines.append("\(indent)... and \(children.count - Self.maxChildrenShown) more")
+                    break
+                }
+                buildCompactTree(element: child, depth: depth, maxDepth: maxDepth,
+                                 lines: &lines, visited: &visited)
+            }
+            return
+        }
+
+        // Build line: "  AXButton "Save" id=save-btn"
+        let indent = String(repeating: "  ", count: depth)
+        var line = "\(indent)\(role)"
+
+        if let t = title, !t.isEmpty {
+            line += " \"\(t.prefix(80))\""
+        }
+        if let v = value, !v.isEmpty, v != title {
+            line += " value=\"\(v.prefix(80))\""
+        }
+        if let id = identifier, !id.isEmpty {
+            line += " id=\(id.prefix(60))"
+        }
+
+        lines.append(line)
+
+        // Truncate long child lists (bookmarks, table rows, etc.)
+        for (i, child) in children.enumerated() {
+            if i >= Self.maxChildrenShown {
+                let remaining = children.count - Self.maxChildrenShown
+                lines.append("\(indent)  ... and \(remaining) more children")
+                break
+            }
+            buildCompactTree(element: child, depth: depth + 1, maxDepth: maxDepth,
+                             lines: &lines, visited: &visited)
+        }
     }
 
     // MARK: - Private helpers
