@@ -333,9 +333,8 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    // MARK: - Render full tree
+    // MARK: - Render full tree (compact Playwright-style)
 
-    /// Renders the full tree from collected nodes, preserving tree order.
     private func renderFullTree(nodes: [String: AXNode]) -> String {
         return MainActor.assumeIsolated {
             guard let root = Element.focusedApplication() else {
@@ -346,6 +345,44 @@ open class JourneyTestCase: XCTestCase {
             renderTree(element: root, depth: 0, lines: &lines, visited: &visited)
             return lines.joined(separator: "\n")
         }
+    }
+
+    /// Strips the "AX" prefix from role names: "AXButton" → "Button"
+    private func shortRole(_ role: String) -> String {
+        if role.hasPrefix("AX"), role.count > 2 {
+            return String(role.dropFirst(2))
+        }
+        return role
+    }
+
+    /// Formats one element as a compact line:
+    ///   Button "Save" #save-btn [value="yes", focused]
+    private func formatNodeLine(role: String, title: String?, value: String?,
+                                identifier: String?, indent: String) -> String {
+        let short = shortRole(role)
+        var line = "\(indent)\(short)"
+
+        if let t = title, !t.isEmpty {
+            line += " \"\(t)\""
+        } else if title == nil, value == nil, identifier == nil {
+            // Unnamed separator (e.g. menu divider)
+            line += " ---"
+        }
+
+        if let id = identifier, !id.isEmpty {
+            line += " #\(id)"
+        }
+
+        // Attributes in brackets
+        var attrs: [String] = []
+        if let v = value, !v.isEmpty, v != title {
+            attrs.append("value=\"\(v)\"")
+        }
+        if !attrs.isEmpty {
+            line += " [\(attrs.joined(separator: ", "))]"
+        }
+
+        return line
     }
 
     @MainActor
@@ -367,14 +404,48 @@ open class JourneyTestCase: XCTestCase {
         let children = element.children(strict: true) ?? []
 
         let indent = String(repeating: "  ", count: depth)
-        var line = "\(indent)\(role)"
-        if let t = title, !t.isEmpty { line += " \"\(t)\"" }
-        if let v = value, !v.isEmpty, v != title { line += " value=\"\(v)\"" }
-        if let id = identifier, !id.isEmpty { line += " id=\(id)" }
+        let line = formatNodeLine(role: role, title: title, value: value,
+                                  identifier: identifier, indent: indent)
         lines.append(line)
 
-        for child in children {
-            renderTree(element: child, depth: depth + 1, lines: &lines, visited: &visited)
+        // Group consecutive children by role for collapsing
+        renderChildren(children, depth: depth + 1, lines: &lines, visited: &visited)
+    }
+
+    /// Renders children with sibling collapsing:
+    /// If 5+ consecutive siblings share the same role, show first 3,
+    /// a "... (N more Type)" line, and the last one.
+    @MainActor
+    private func renderChildren(
+        _ children: [Element], depth: Int, lines: inout [String], visited: inout Set<UInt>
+    ) {
+        // Group consecutive children by role
+        var i = 0
+        while i < children.count {
+            let child = children[i]
+            let childRole = child.role() ?? "AXUnknown"
+
+            // Count consecutive siblings with same role
+            var runEnd = i + 1
+            while runEnd < children.count, (children[runEnd].role() ?? "") == childRole {
+                runEnd += 1
+            }
+            let runLength = runEnd - i
+
+            if runLength >= 5 {
+                // Show first 3
+                for j in i..<(i + 3) {
+                    renderTree(element: children[j], depth: depth, lines: &lines, visited: &visited)
+                }
+                let indent = String(repeating: "  ", count: depth)
+                lines.append("\(indent)... (\(runLength - 4) more \(shortRole(childRole)))")
+                // Show last 1
+                renderTree(element: children[runEnd - 1], depth: depth, lines: &lines, visited: &visited)
+                i = runEnd
+            } else {
+                renderTree(element: child, depth: depth, lines: &lines, visited: &visited)
+                i += 1
+            }
         }
     }
 
