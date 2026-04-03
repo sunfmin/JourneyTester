@@ -185,8 +185,8 @@ open class JourneyTestCase: XCTestCase {
         let prefix = String(format: "%03d", screenshotIndex)
         let tag = "\(prefix)-\(label)"
 
-        captureScreenshots(tag: tag)
         app.activate()
+        captureScreenshots(tag: tag)
         dumpPerWindow(tag: tag)
     }
 
