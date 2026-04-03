@@ -143,18 +143,18 @@ final class SafariTests: JourneyTestCase {
         step("focus address bar") {
             app.typeKey("l", modifierFlags: .command)
             sleep(1)
-            snap("address-bar-focused")
         }
 
-        step("type URL and navigate") {
+        // Steps > 5s need slowOkReason, otherwise the test fails.
+        // With slowOkReason, snapshots are taken every 5s while waiting.
+        step("navigate to page", timeout: 15, slowOkReason: "loading page") {
             app.typeText("https://example.com\n")
-            sleep(3)
-            snap("page-loaded")
-        }
-
-        step("verify page content") {
             let webView = app.webViews.firstMatch
             waitAndSnap(webView, timeout: 10, "Web view should exist")
+        }
+
+        step("verify content") {
+            snap("page-loaded")
         }
     }
 }
@@ -169,26 +169,28 @@ final class SafariTests: JourneyTestCase {
 | `journeyName` | required | Folder name for artifacts |
 | `appBundleID` | `nil` | Bundle ID of app under test. `nil` = test host app |
 | `axTreeDepth` | `8` | Max depth for AX tree traversal |
-| `watchdogTimeout` | `10` | Seconds without `snap()` before test fails |
 
 ### Methods
 
 | Method | Description |
 |--------|-------------|
 | `snap("label")` | Screenshot + AX tree per window |
-| `step("name") { ... }` | Named phase, auto-snaps at start, snaps on failure |
-| `waitAndSnap(element, "msg")` | Wait for element + snap, fails with artifacts on timeout |
+| `step("name") { ... }` | Named phase, must complete in < 5s |
+| `step("name", timeout: 30, slowOkReason: "...") { ... }` | Slow step, snapshots every 5s while waiting |
+| `waitAndSnap(element, "msg")` | Wait for element (polls 0.5s), snap on failure |
 | `assertExists(element, "msg")` | Assert element exists, snap on failure |
 | `axQuery(role:title:identifier:)` | Query AXorcist for elements |
 | `writeArtifact("file", content)` | Write custom artifact to journey dir |
 
-## Watchdog
+## Timing rules
 
-If no `snap()` is called for 10 seconds (default), the watchdog captures screenshots + AX trees, then fails the test. This prevents tests from hanging silently and ensures AI always has artifacts to diagnose the stuck state. Override `watchdogTimeout` to adjust:
-
-```swift
-override var watchdogTimeout: TimeInterval { 30 } // 30s instead of 10
-```
+| Situation | Behavior |
+|-----------|----------|
+| Step completes in < 5s | OK |
+| Step takes > 5s, no `slowOkReason` | Test fails |
+| Step takes > 5s, `slowOkReason` given | OK, snapshots every 5s while waiting |
+| Step exceeds `timeout` | Test fails |
+| No `snap()` for 10s (global watchdog) | Test fails |
 
 ## Running tests
 

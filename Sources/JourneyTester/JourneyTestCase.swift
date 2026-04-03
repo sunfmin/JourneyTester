@@ -9,20 +9,16 @@ import XCTest
 /// - A screenshot (PNG)
 /// - A compact accessibility tree (TXT)
 ///
-/// If no `snap()` is called for 10+ seconds, a watchdog auto-captures
-/// both artifacts so AI always has context even if a test hangs.
+/// Steps that take > 5s require a `slowOkReason` or the test fails.
+/// When `slowOkReason` is provided, snapshots are taken every 5s while waiting.
+/// A global watchdog fails the test if no `snap()` is called for 10s.
 open class JourneyTestCase: XCTestCase {
 
     // MARK: - Override points
 
     open var journeyName: String { fatalError("Subclass must override journeyName") }
     open var appBundleID: String? { nil }
-
-    /// Max depth for AX tree traversal.
     open var axTreeDepth: Int { 8 }
-
-    /// Seconds without a `snap()` before the watchdog fails the test. Default 10.
-    open var watchdogTimeout: TimeInterval { 10 }
 
     // MARK: - Public state
 
@@ -52,7 +48,6 @@ open class JourneyTestCase: XCTestCase {
     private var lastSnapDate = Date()
     private var watchdogTimer: Timer?
 
-
     private var outputRoot: String {
         if let env = ProcessInfo.processInfo.environment["JOURNEY_TESTER_OUTPUT"] {
             return env
@@ -71,14 +66,14 @@ open class JourneyTestCase: XCTestCase {
         if !trusted {
             MainActor.assumeIsolated { AXTrustUtil.openAccessibilitySettings() }
             XCTFail("""
-                ⚠️  Accessibility permission required.
+                Accessibility permission required.
 
                 JourneyTester uses the macOS Accessibility API (AXorcist) to capture
                 the UI element tree for AI-debuggable test output.
 
                 Please grant Accessibility access to the test runner:
-                  System Settings → Privacy & Security → Accessibility
-                  → Enable your test runner app (e.g. SafariUITests-Runner)
+                  System Settings > Privacy & Security > Accessibility
+                  > Enable your test runner app (e.g. SafariUITests-Runner)
 
                 Then re-run the tests. This is a one-time setup.
                 """)
@@ -99,7 +94,7 @@ open class JourneyTestCase: XCTestCase {
         startWatchdog()
 
         let resolvedPath = (artifactDir as NSString).resolvingSymlinksInPath
-        print("📂 JourneyTester artifacts: \(resolvedPath)")
+        print("JourneyTester artifacts: \(resolvedPath)")
     }
 
     override open func tearDownWithError() throws {
@@ -115,15 +110,76 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Steps
 
-    public func step(_ name: String, file: StaticString = #file, line: UInt = #line, _ body: () throws -> Void) {
+    /// Runs a named test phase with timing enforcement.
+    ///
+    /// - If the step body takes > 5 seconds and `slowOkReason` is nil, the test fails.
+    /// - If `slowOkReason` is provided, snapshots are taken every 5 seconds while waiting,
+    ///   up to `timeout`.
+    ///
+    /// ```swift
+    /// step("click button") {           // must complete in < 5s
+    ///     app.buttons["Go"].tap()
+    /// }
+    ///
+    /// step("wait for page", timeout: 30, slowOkReason: "page loading over network") {
+    ///     let heading = app.staticTexts["Welcome"]
+    ///     XCTAssertTrue(heading.waitForExistence(timeout: 30))
+    /// }
+    /// ```
+    public func step(
+        _ name: String,
+        timeout: TimeInterval = 10,
+        slowOkReason: String? = nil,
+        file: StaticString = #file,
+        line: UInt = #line,
+        _ body: () throws -> Void
+    ) {
         let safeName = sanitize(name)
         snap("step-\(safeName)-begin")
+
+        let stepStart = Date()
+
+        // If slow is expected, take periodic snapshots during the step
+        var periodicTimer: Timer?
+        if slowOkReason != nil {
+            var periodicCount = 0
+            periodicTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                periodicCount += 1
+                self.snap("step-\(safeName)-waiting-\(periodicCount)")
+            }
+        }
 
         do {
             try body()
         } catch {
+            periodicTimer?.invalidate()
             snap("FAIL-step-\(safeName)")
             XCTFail("Step '\(name)' failed: \(error)", file: file, line: line)
+            return
+        }
+
+        periodicTimer?.invalidate()
+
+        let elapsed = Date().timeIntervalSince(stepStart)
+
+        if elapsed > TimeInterval(timeout) {
+            snap("TIMEOUT-step-\(safeName)")
+            XCTFail("""
+                Step '\(name)' timed out: took \(String(format: "%.1f", elapsed))s (limit: \(Int(timeout))s).
+                Artifacts: \(artifactDir)/
+                """, file: file, line: line)
+            return
+        }
+
+        if elapsed > 5 && slowOkReason == nil {
+            snap("SLOW-step-\(safeName)")
+            XCTFail("""
+                Step '\(name)' took \(String(format: "%.1f", elapsed))s (> 5s) without slowOkReason.
+                If this is expected, add: step("\(name)", slowOkReason: "reason") { ... }
+                Artifacts: \(artifactDir)/
+                """, file: file, line: line)
+            return
         }
     }
 
@@ -139,13 +195,13 @@ open class JourneyTestCase: XCTestCase {
 
         captureScreenshots(tag: tag)
         app.activate()
-
-        // Dump each window as a separate file
         dumpPerWindow(tag: tag)
     }
 
     // MARK: - Wait + Assert helpers
 
+    /// Waits for an element, polling every 0.5s. Returns immediately when found.
+    /// Snaps before waiting and on failure.
     public func waitAndSnap(
         _ element: XCUIElement,
         timeout: TimeInterval = 5,
@@ -155,11 +211,15 @@ open class JourneyTestCase: XCTestCase {
     ) {
         snap("wait-\(sanitize(element.identifier))")
 
-        let found = element.waitForExistence(timeout: timeout)
+        // Poll with short intervals instead of blocking for the full timeout.
+        let deadline = Date().addingTimeInterval(timeout)
+        var found = element.exists
+        while !found && Date() < deadline {
+            found = element.waitForExistence(timeout: 0.5)
+        }
 
         if !found {
             snap("FAIL-\(sanitize(element.identifier))")
-
             XCTFail("""
                 \(message)
 
@@ -177,7 +237,6 @@ open class JourneyTestCase: XCTestCase {
     ) {
         if !element.exists {
             snap("FAIL-assertExists-\(sanitize(element.identifier))")
-
             XCTFail("""
                 \(message)
 
@@ -238,8 +297,6 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Per-window AX tree dump
 
-    /// Dumps each window's AX tree into a separate file:
-    ///   006-page-loaded-w0-axtree.txt  (or just -axtree.txt if single window)
     private func dumpPerWindow(tag: String) {
         MainActor.assumeIsolated {
             guard let appElement = Element.focusedApplication() else {
@@ -247,12 +304,10 @@ open class JourneyTestCase: XCTestCase {
                 return
             }
 
-            // Get windows via kAXWindowsAttribute
             let windows: [AXUIElement] = appElement.attribute(
                 Attribute(AXAttributeNames.kAXWindowsAttribute)) ?? []
 
             if windows.isEmpty {
-                // Fallback: dump the app root
                 var lines: [String] = []
                 var visited = Set<UInt>()
                 renderTree(element: appElement, depth: 0, lines: &lines, visited: &visited)
@@ -275,7 +330,7 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    // MARK: - Tree rendering (compact Playwright-style)
+    // MARK: - Tree rendering
 
     private func shortRole(_ role: String) -> String {
         if role.hasPrefix("AX"), role.count > 2 {
@@ -333,12 +388,10 @@ open class JourneyTestCase: XCTestCase {
             lines.append(line)
             renderChildren(children, depth: depth + 1, lines: &lines, visited: &visited)
         } else {
-            // Skip unlabeled nodes, promote children
             renderChildren(children, depth: depth, lines: &lines, visited: &visited)
         }
     }
 
-    /// Collapses 5+ consecutive same-role siblings: first 3, "... (N more)", last 1.
     @MainActor
     private func renderChildren(
         _ children: [Element], depth: Int, lines: inout [String], visited: inout Set<UInt>
@@ -403,7 +456,7 @@ open class JourneyTestCase: XCTestCase {
             .replacingOccurrences(of: "/", with: "_")
     }
 
-    // MARK: - Watchdog
+    // MARK: - Watchdog (fixed 10s)
 
     private func startWatchdog() {
         watchdogTimer = Timer.scheduledTimer(
@@ -414,10 +467,10 @@ open class JourneyTestCase: XCTestCase {
                 guard self.app.windows.count > 0,
                       self.app.windows.firstMatch.exists else { return }
                 let gap = Date().timeIntervalSince(self.lastSnapDate)
-                if gap > self.watchdogTimeout {
+                if gap > 10 {
                     self.snap("WATCHDOG-TIMEOUT")
                     XCTFail("""
-                        Watchdog timeout: no snap() called for \(Int(gap))s (limit: \(Int(self.watchdogTimeout))s).
+                        Watchdog timeout: no snap() called for \(Int(gap))s.
                         The test may be stuck. See artifacts: \(self.artifactDir)/
                         """)
                 }

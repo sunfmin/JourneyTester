@@ -5,8 +5,6 @@ final class SafariJourneyTests: JourneyTestCase {
     override var journeyName: String { "safari-basics" }
     override var appBundleID: String? { "com.apple.Safari" }
 
-    // MARK: - Test: Navigate to a URL
-
     func testNavigateToURL() {
         step("open new window") {
             app.typeKey("n", modifierFlags: .command)
@@ -20,39 +18,32 @@ final class SafariJourneyTests: JourneyTestCase {
             snap("address-bar-focused")
         }
 
-        step("type URL and navigate") {
+        step("type URL and navigate", timeout: 15, slowOkReason: "waiting for page to load") {
             app.typeText("https://example.com\n")
-            sleep(3)
+            let webView = app.webViews.firstMatch
+            waitAndSnap(webView, timeout: 10, "Web view should exist after navigation")
             snap("page-loaded")
         }
 
         step("verify page content") {
-            let webView = app.webViews.firstMatch
-            waitAndSnap(webView, timeout: 10, "Web view should exist after navigation")
-
-            // Use AXorcist to inspect the page structure
             let response = axQuery(role: "AXStaticText", title: "Example Domain")
             snap("verified-content")
 
             if case .success = response {
                 // Found "Example Domain" via AXorcist
             }
-            // Not a hard failure if AXorcist can't find it — the webView assertion above
-            // already verified the page loaded. AXorcist depth may not reach web text.
         }
     }
 
-    // MARK: - Test: Open multiple tabs
-
     func testMultipleTabs() {
-        step("open first tab") {
+        step("open first tab", timeout: 15, slowOkReason: "loading example.com") {
             app.typeKey("l", modifierFlags: .command)
             app.typeText("https://example.com\n")
             sleep(3)
             snap("first-tab-loaded")
         }
 
-        step("open second tab") {
+        step("open second tab", timeout: 15, slowOkReason: "loading apple.com") {
             app.typeKey("t", modifierFlags: .command)
             sleep(1)
             app.typeText("https://www.apple.com\n")
@@ -71,29 +62,22 @@ final class SafariJourneyTests: JourneyTestCase {
         }
     }
 
-    // MARK: - Test: Search from address bar
-
     func testAddressBarSearch() {
         step("focus address bar") {
             app.typeKey("l", modifierFlags: .command)
             sleep(1)
         }
 
-        step("type search query") {
+        step("type search query", timeout: 10, slowOkReason: "waiting for search suggestions") {
             app.typeText("swift programming language")
             sleep(2)
             snap("search-suggestions-visible")
         }
 
-        step("submit search") {
+        step("submit search", timeout: 20, slowOkReason: "waiting for search results page") {
             app.typeKey(.return, modifierFlags: [])
-            sleep(5)
-            snap("search-results-loaded")
-        }
-
-        step("verify results page") {
             let webView = app.webViews.firstMatch
-            waitAndSnap(webView, timeout: 10, "Search results page should load")
+            waitAndSnap(webView, timeout: 15, "Search results page should load")
         }
     }
 }
