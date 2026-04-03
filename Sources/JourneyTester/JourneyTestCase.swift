@@ -152,19 +152,18 @@ open class JourneyTestCase: XCTestCase {
         app.activate()
 
         let currentNodes = collectAXNodes()
-        let isFailure = label.hasPrefix("FAIL") || label.hasPrefix("TEARDOWN")
 
-        if isFirstSnap || isFailure {
-            // Full tree
-            let tree = renderFullTree(nodes: currentNodes)
-            writeArtifact("\(tag)-axtree.txt", content: tree)
-            isFirstSnap = false
-        } else {
-            // Diff against previous
+        // Always write the full tree
+        let tree = renderFullTree(nodes: currentNodes)
+        writeArtifact("\(tag)-axtree.txt", content: tree)
+
+        // After the first snap, also write a diff showing what changed
+        if !isFirstSnap {
             let diff = renderDiff(previous: previousTreeNodes, current: currentNodes, tag: tag)
-            writeArtifact("\(tag)-axtree.txt", content: diff)
+            writeArtifact("\(tag)-diff.txt", content: diff)
         }
 
+        isFirstSnap = false
         previousTreeNodes = currentNodes
     }
 
