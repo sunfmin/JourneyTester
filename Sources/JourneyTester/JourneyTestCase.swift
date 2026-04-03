@@ -73,20 +73,35 @@ open class JourneyTestCase: XCTestCase {
         if let env = ProcessInfo.processInfo.environment["JOURNEY_TESTER_OUTPUT"] {
             return env
         }
-        return "\(projectRoot)/.journeytester"
-    }
-
-    private var projectRoot: String {
-        URL(fileURLWithPath: #file)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent().path
+        return "\(NSHomeDirectory())/.journeytester"
     }
 
     // MARK: - Setup / Teardown
 
     override open func setUpWithError() throws {
         continueAfterFailure = false
+
+        // Check Accessibility permission — required for AXorcist to read the AX tree.
+        // Passing promptIfNeeded: true triggers the system dialog on first run.
+        let trusted = MainActor.assumeIsolated {
+            AXTrustUtil.checkAccessibilityPermissions(promptIfNeeded: true)
+        }
+        if !trusted {
+            MainActor.assumeIsolated { AXTrustUtil.openAccessibilitySettings() }
+            XCTFail("""
+                ⚠️  Accessibility permission required.
+
+                JourneyTester uses the macOS Accessibility API (AXorcist) to capture
+                the UI element tree for AI-debuggable test output.
+
+                Please grant Accessibility access to the test runner:
+                  System Settings → Privacy & Security → Accessibility
+                  → Enable "SafariUITests-Runner" (or your test runner app)
+
+                Then re-run the tests. This is a one-time setup.
+                """)
+            return
+        }
 
         try? FileManager.default.removeItem(atPath: artifactDir)
         try? FileManager.default.createDirectory(
@@ -100,6 +115,9 @@ open class JourneyTestCase: XCTestCase {
 
         lastSnapDate = Date()
         startWatchdog()
+
+        let resolvedPath = (artifactDir as NSString).resolvingSymlinksInPath
+        print("📂 JourneyTester artifacts: \(resolvedPath)")
     }
 
     override open func tearDownWithError() throws {
@@ -140,6 +158,10 @@ open class JourneyTestCase: XCTestCase {
         let tag = "\(prefix)-\(label)"
 
         captureScreenshots(tag: tag)
+
+        // Ensure the app under test is focused so AXorcist's "focused app"
+        // lookup finds it (xctrunner sandbox blocks bundle ID lookups).
+        app.activate()
 
         let tree = dumpAXTree()
         writeArtifact("\(tag)-axtree.json", content: tree)
@@ -194,20 +216,25 @@ open class JourneyTestCase: XCTestCase {
     ///
     /// Uses `collectAll` internally (which is Safari-safe) then filters results,
     /// rather than the `query` command whose traversal path crashes on Safari.
+    /// Uses the focused app (nil appIdentifier) because the xctrunner sandbox
+    /// blocks NSWorkspace.shared.runningApplications lookups by bundle ID.
     public func axQuery(
         role: String? = nil,
         title: String? = nil,
         identifier: String? = nil
     ) -> AXResponse {
-        MainActor.assumeIsolated {
-            // Build filter criteria as [String: String] for collectAll
+        // Ensure app is focused so AXorcist's "focused app" finds it.
+        app.activate()
+
+        return MainActor.assumeIsolated {
             var filter: [String: String] = [:]
             if let role { filter["AXRole"] = role }
             if let title { filter["AXTitle"] = title }
             if let identifier { filter["AXIdentifier"] = identifier }
 
+            // Use nil (focused app) — the xctrunner sandbox blocks bundle ID lookups.
             let cmd = CollectAllCommand(
-                appIdentifier: appBundleID,
+                appIdentifier: nil,
                 maxDepth: axTreeDepth,
                 filterCriteria: filter.isEmpty ? nil : filter
             )
@@ -242,7 +269,8 @@ open class JourneyTestCase: XCTestCase {
     /// Returns pretty-printed JSON.
     public func dumpAXTree() -> String {
         MainActor.assumeIsolated {
-            let cmd = CollectAllCommand(appIdentifier: appBundleID, maxDepth: axTreeDepth)
+            // Use nil (focused app) — xctrunner sandbox blocks bundle ID lookups.
+            let cmd = CollectAllCommand(appIdentifier: nil, maxDepth: axTreeDepth)
             let envelope = AXCommandEnvelope(
                 commandID: "journey-dump-\(screenshotIndex)",
                 command: .collectAll(cmd)

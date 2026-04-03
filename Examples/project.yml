@@ -19,6 +19,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.journeytester.host
         GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_IDENTITY: "JourneyTester Dev"
+        CODE_SIGNING_ALLOWED: "YES"
+        CODE_SIGN_STYLE: "Manual"
+        ENABLE_HARDENED_RUNTIME: "NO"
 
   SafariUITests:
     type: bundle.ui-testing
@@ -36,3 +40,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.journeytester.safari-uitests
         TEST_TARGET_NAME: HostApp
+        BUNDLE_LOADER: ""
+        TEST_HOST: ""
+        CODE_SIGN_IDENTITY: "JourneyTester Dev"
+        CODE_SIGNING_ALLOWED: "YES"
+        CODE_SIGN_STYLE: "Manual"
+        ENABLE_HARDENED_RUNTIME: "NO"

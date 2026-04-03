@@ -5,3 +5,4 @@ DerivedData/
 *.xcresult
 .journeytester/
 Package.resolved
+.journeytester
