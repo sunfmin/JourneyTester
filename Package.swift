@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "JourneyTester", targets: ["JourneyTester"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/steipete/AXorcist.git", revision: "c75d06f"),
+        .package(url: "https://github.com/sunfmin/AXorcist.git", branch: "fix/safari-traversal-crash"),
     ],
     targets: [
         .target(

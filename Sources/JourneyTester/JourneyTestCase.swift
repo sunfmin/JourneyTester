@@ -37,9 +37,9 @@ open class JourneyTestCase: XCTestCase {
     /// Bundle identifier of the app under test.
     open var appBundleID: String? { nil }
 
-    /// Max depth for AXorcist tree collection. Default 3 is safe for browsers.
-    /// Override to go deeper for simpler apps.
-    open var axTreeDepth: Int { 3 }
+    /// Max depth for AXorcist tree collection.
+    /// Override to go deeper or shallower depending on the app.
+    open var axTreeDepth: Int { 10 }
 
     // MARK: - Public state
 
@@ -190,32 +190,49 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    /// Query AXorcist directly for an element by role/title/identifier.
+    /// Query AXorcist for an element by role/title/identifier.
+    ///
+    /// Uses `collectAll` internally (which is Safari-safe) then filters results,
+    /// rather than the `query` command whose traversal path crashes on Safari.
     public func axQuery(
         role: String? = nil,
         title: String? = nil,
-        identifier: String? = nil,
-        matchType: JSONPathHintComponent.MatchType = .contains
+        identifier: String? = nil
     ) -> AXResponse {
         MainActor.assumeIsolated {
-            var criteria: [Criterion] = []
-            if let role {
-                criteria.append(Criterion(attribute: "AXRole", value: role, matchType: matchType))
-            }
-            if let title {
-                criteria.append(Criterion(attribute: "AXTitle", value: title, matchType: matchType))
-            }
-            if let identifier {
-                criteria.append(Criterion(attribute: "AXIdentifier", value: identifier, matchType: matchType))
-            }
+            // Build filter criteria as [String: String] for collectAll
+            var filter: [String: String] = [:]
+            if let role { filter["AXRole"] = role }
+            if let title { filter["AXTitle"] = title }
+            if let identifier { filter["AXIdentifier"] = identifier }
 
-            let locator = Locator(criteria: criteria)
-            let cmd = QueryCommand(appIdentifier: appBundleID, locator: locator, maxDepthForSearch: axTreeDepth)
+            let cmd = CollectAllCommand(
+                appIdentifier: appBundleID,
+                maxDepth: axTreeDepth,
+                filterCriteria: filter.isEmpty ? nil : filter
+            )
             let envelope = AXCommandEnvelope(
                 commandID: "journey-query-\(screenshotIndex)",
-                command: .query(cmd)
+                command: .collectAll(cmd)
             )
-            return AXorcist.shared.runCommand(envelope)
+            let response = AXorcist.shared.runCommand(envelope)
+
+            // Convert collectAll response: if elements found → success, else error
+            if case .success(let payload, _) = response,
+               let payload,
+               let dict = payload.value as? [String: Any],
+               let count = dict["count"] as? Int, count > 0
+            {
+                return response
+            } else if case .error = response {
+                return response
+            } else {
+                let desc = filter.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+                return .errorResponse(
+                    message: "No elements found matching [\(desc)]",
+                    code: .elementNotFound
+                )
+            }
         }
     }
 
