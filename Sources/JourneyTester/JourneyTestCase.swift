@@ -270,7 +270,7 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    /// Waits for an element to disappear, polling every 0.5s.
+    /// Waits for an element to disappear.
     /// Snaps on failure (element still exists after timeout).
     public func waitGoneAndSnap(
         _ element: XCUIElement,
@@ -279,12 +279,11 @@ open class JourneyTestCase: XCTestCase {
         file: StaticString = #file,
         line: UInt = #line
     ) {
-        let deadline = Date().addingTimeInterval(timeout)
-        while element.exists && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.5)
-        }
+        let predicate = NSPredicate(format: "exists == false")
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        let result = XCTWaiter.wait(for: [expectation], timeout: timeout)
 
-        if element.exists {
+        if result != .completed {
             snap("FAIL-still-\(sanitize(element.identifier))")
             XCTFail("""
                 \(message)
