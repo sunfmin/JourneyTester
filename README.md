@@ -175,7 +175,7 @@ final class SafariTests: JourneyTestCase {
 | Method | Description |
 |--------|-------------|
 | `snap("label")` | Screenshot + AX tree per window |
-| `step("name") { ... }` | Named phase, must complete in < 5s |
+| `step("name") { ... }` | Named phase, must complete in < 3s |
 | `step("name", timeout: 30, slowOkReason: "...") { ... }` | Slow step, snapshots every 5s while waiting |
 | `waitAndSnap(element, "msg")` | Wait for element (polls 0.5s), snap on failure |
 | `assertExists(element, "msg")` | Assert element exists, snap on failure |
@@ -186,9 +186,9 @@ final class SafariTests: JourneyTestCase {
 
 | Situation | Behavior |
 |-----------|----------|
-| Step completes in < 5s | OK |
-| Step takes > 5s, no `slowOkReason` | Test fails |
-| Step takes > 5s, `slowOkReason` given | OK, snapshots every 5s while waiting |
+| Step completes in < 3s (default timeout) | OK |
+| Step exceeds timeout, no `slowOkReason` | Test fails |
+| Step exceeds timeout, `slowOkReason` given | OK, snapshots every 5s while waiting |
 | Step exceeds `timeout` | Test fails |
 | No `snap()` for 10s (global watchdog) | Test fails |
 

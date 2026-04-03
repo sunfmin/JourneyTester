@@ -128,7 +128,7 @@ open class JourneyTestCase: XCTestCase {
     /// ```
     public func step(
         _ name: String,
-        timeout: TimeInterval = 10,
+        timeout: TimeInterval = 3,
         slowOkReason: String? = nil,
         file: StaticString = #file,
         line: UInt = #line,
@@ -163,23 +163,15 @@ open class JourneyTestCase: XCTestCase {
 
         let elapsed = Date().timeIntervalSince(stepStart)
 
-        if elapsed > TimeInterval(timeout) {
-            snap("TIMEOUT-step-\(safeName)")
-            XCTFail("""
-                Step '\(name)' timed out: took \(String(format: "%.1f", elapsed))s (limit: \(Int(timeout))s).
-                Artifacts: \(artifactDir)/
-                """, file: file, line: line)
-            return
-        }
-
-        if elapsed > 5 && slowOkReason == nil {
+        if elapsed > timeout {
             snap("SLOW-step-\(safeName)")
-            XCTFail("""
-                Step '\(name)' took \(String(format: "%.1f", elapsed))s (> 5s) without slowOkReason.
-                If this is expected, add: step("\(name)", slowOkReason: "reason") { ... }
-                Artifacts: \(artifactDir)/
-                """, file: file, line: line)
-            return
+            if slowOkReason == nil {
+                XCTFail("""
+                    Step '\(name)' took \(String(format: "%.1f", elapsed))s (limit: \(Int(timeout))s).
+                    If this is expected, add: step("\(name)", timeout: N, slowOkReason: "reason") { ... }
+                    Artifacts: \(artifactDir)/
+                    """, file: file, line: line)
+            }
         }
     }
 
