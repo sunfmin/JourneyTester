@@ -7,18 +7,16 @@ import XCTest
 ///
 /// Every snap captures:
 /// - A screenshot (PNG) per window
-/// - A compact accessibility tree (TXT) — concise, AI-readable
+/// - An accessibility tree — full on first snap, then diffs only
 ///
-/// Example tree output:
+/// Example output for step 3:
 /// ```
-/// AXApplication "Safari"
-///   AXWindow "Example Domain"
-///     AXToolbar
-///       AXButton "Back"
-///       AXTextField value="https://example.com"
-///     AXWebArea
-///       AXHeading "Example Domain"
-///       AXStaticText "This domain is for use in illustrative examples"
+/// === Snap 003: step-type-URL ===
+/// [CHANGED] AXWindow "..." > AXToolbar > AXTextField id=WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD
+///   value: "" → "https://example.com"
+/// [ADDED]   AXWindow "Example Domain" > AXWebArea > AXHeading "Example Domain"
+/// [ADDED]   AXWindow "Example Domain" > AXWebArea > AXStaticText value="This domain is..."
+/// [REMOVED] AXWindow "Start Page" > ... > AXList id=StartPageOnboardingSection
 /// ```
 open class JourneyTestCase: XCTestCase {
 
@@ -27,7 +25,7 @@ open class JourneyTestCase: XCTestCase {
     open var journeyName: String { fatalError("Subclass must override journeyName") }
     open var appBundleID: String? { nil }
 
-    /// Max depth for AX tree traversal. Default 8 balances detail vs noise.
+    /// Max depth for AX tree traversal.
     open var axTreeDepth: Int { 8 }
 
     // MARK: - Public state
@@ -57,6 +55,10 @@ open class JourneyTestCase: XCTestCase {
 
     private var lastSnapDate = Date()
     private var watchdogTimer: Timer?
+
+    /// Previous snap's tree nodes, keyed for diffing.
+    private var previousTreeNodes: [String: AXNode] = [:]
+    private var isFirstSnap = true
 
     private var outputRoot: String {
         if let env = ProcessInfo.processInfo.environment["JOURNEY_TESTER_OUTPUT"] {
@@ -101,6 +103,8 @@ open class JourneyTestCase: XCTestCase {
         }
 
         lastSnapDate = Date()
+        isFirstSnap = true
+        previousTreeNodes = [:]
         startWatchdog()
 
         let resolvedPath = (artifactDir as NSString).resolvingSymlinksInPath
@@ -134,6 +138,9 @@ open class JourneyTestCase: XCTestCase {
 
     // MARK: - Snap
 
+    /// Captures screenshots + AX tree artifact.
+    /// First snap writes the full tree. Subsequent snaps write only the diff.
+    /// On failure snaps (label starts with "FAIL"), the full tree is always written.
     public func snap(_ label: String) {
         screenshotIndex += 1
         lastSnapDate = Date()
@@ -142,11 +149,23 @@ open class JourneyTestCase: XCTestCase {
         let tag = "\(prefix)-\(label)"
 
         captureScreenshots(tag: tag)
-
         app.activate()
 
-        let tree = dumpAXTree()
-        writeArtifact("\(tag)-axtree.txt", content: tree)
+        let currentNodes = collectAXNodes()
+        let isFailure = label.hasPrefix("FAIL") || label.hasPrefix("TEARDOWN")
+
+        if isFirstSnap || isFailure {
+            // Full tree
+            let tree = renderFullTree(nodes: currentNodes)
+            writeArtifact("\(tag)-axtree.txt", content: tree)
+            isFirstSnap = false
+        } else {
+            // Diff against previous
+            let diff = renderDiff(previous: previousTreeNodes, current: currentNodes, tag: tag)
+            writeArtifact("\(tag)-axtree.txt", content: diff)
+        }
+
+        previousTreeNodes = currentNodes
     }
 
     // MARK: - Wait + Assert helpers
@@ -234,36 +253,6 @@ open class JourneyTestCase: XCTestCase {
         }
     }
 
-    // MARK: - AXorcist compact tree dump
-
-    /// Builds a compact, indented text tree of the focused app's AX hierarchy.
-    ///
-    /// Output looks like:
-    /// ```
-    /// AXWindow "Example Domain"
-    ///   AXToolbar
-    ///     AXButton "Back"
-    ///     AXTextField value="https://example.com"
-    ///   AXWebArea
-    ///     AXHeading "Example Domain"
-    /// ```
-    ///
-    /// Only shows role + the first meaningful label (title > value > identifier).
-    /// Skips noise roles (AXGroup, AXGeneric) that have no label and only one child.
-    public func dumpAXTree() -> String {
-        MainActor.assumeIsolated {
-            guard let root = Element.focusedApplication() else {
-                return "// AX tree unavailable — no focused application"
-            }
-
-            var lines: [String] = []
-            var visited = Set<UInt>()
-            buildCompactTree(element: root, depth: 0, maxDepth: axTreeDepth,
-                             lines: &lines, visited: &visited)
-            return lines.joined(separator: "\n")
-        }
-    }
-
     // MARK: - Artifact writing
 
     public func writeArtifact(_ filename: String, content: String) {
@@ -271,27 +260,49 @@ open class JourneyTestCase: XCTestCase {
         try? content.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
-    // MARK: - Private: compact tree builder
+    // MARK: - AX tree model
 
-    /// Roles that are pure layout noise — skip if unlabeled (promote children).
+    /// A lightweight node for diffing. Keyed by its path in the tree.
+    private struct AXNode {
+        let role: String
+        let title: String?
+        let value: String?
+        let identifier: String?
+        let path: String       // e.g. "AXWindow 'Main' > AXToolbar > AXTextField"
+        let displayLine: String // e.g. "AXTextField value=\"https://...\" id=..."
+        let depth: Int
+    }
+
+    // MARK: - Collect nodes
+
+    private func collectAXNodes() -> [String: AXNode] {
+        MainActor.assumeIsolated {
+            guard let root = Element.focusedApplication() else {
+                return [:]
+            }
+            var nodes: [String: AXNode] = [:]
+            var visited = Set<UInt>()
+            collectNodes(element: root, depth: 0, pathParts: [], nodes: &nodes, visited: &visited)
+            return nodes
+        }
+    }
+
     private static let noiseRoles: Set<String> = [
         "AXGroup", "AXGeneric", "AXSection", "AXArticle",
         "AXLayoutArea", "AXLayoutItem", "AXSplitGroup",
     ]
 
-    /// Max children shown per parent before truncating with "... and N more".
     private static let maxChildrenShown = 5
 
     @MainActor
-    private func buildCompactTree(
+    private func collectNodes(
         element: Element,
         depth: Int,
-        maxDepth: Int,
-        lines: inout [String],
+        pathParts: [String],
+        nodes: inout [String: AXNode],
         visited: inout Set<UInt>
     ) {
-        guard depth <= maxDepth else { return }
-
+        guard depth <= axTreeDepth else { return }
         let hash = CFHash(element.underlyingElement)
         guard visited.insert(hash).inserted else { return }
 
@@ -303,14 +314,98 @@ open class JourneyTestCase: XCTestCase {
             return nil
         }()
         let identifier = element.identifier()
-
         let children = element.children(strict: true) ?? []
 
         let hasLabel = (title != nil && title?.isEmpty == false)
             || value != nil
             || (identifier != nil && identifier?.isEmpty == false)
 
-        // Skip noise containers that add no information — promote children
+        // Noise containers: skip but recurse into children with same path
+        if Self.noiseRoles.contains(role), !hasLabel {
+            for (i, child) in children.enumerated() {
+                if i >= Self.maxChildrenShown { break }
+                collectNodes(element: child, depth: depth, pathParts: pathParts,
+                             nodes: &nodes, visited: &visited)
+            }
+            return
+        }
+
+        // Build a human-readable key for this node
+        var pathLabel = role
+        if let t = title, !t.isEmpty { pathLabel += " \"\(t.prefix(40))\"" }
+        else if let id = identifier, !id.isEmpty { pathLabel += " id=\(id.prefix(40))" }
+
+        let currentPath = (pathParts + [pathLabel]).joined(separator: " > ")
+
+        // Build display line
+        let indent = String(repeating: "  ", count: depth)
+        var displayLine = "\(indent)\(role)"
+        if let t = title, !t.isEmpty { displayLine += " \"\(t.prefix(80))\"" }
+        if let v = value, !v.isEmpty, v != title { displayLine += " value=\"\(v.prefix(80))\"" }
+        if let id = identifier, !id.isEmpty { displayLine += " id=\(id.prefix(60))" }
+
+        let node = AXNode(
+            role: role, title: title, value: value, identifier: identifier,
+            path: currentPath, displayLine: displayLine, depth: depth
+        )
+        nodes[currentPath] = node
+
+        for (i, child) in children.enumerated() {
+            if i >= Self.maxChildrenShown {
+                let truncPath = currentPath + " > ... (\(children.count - Self.maxChildrenShown) more)"
+                let truncLine = "\(indent)  ... and \(children.count - Self.maxChildrenShown) more children"
+                nodes[truncPath] = AXNode(
+                    role: "...", title: nil, value: nil, identifier: nil,
+                    path: truncPath, displayLine: truncLine, depth: depth + 1
+                )
+                break
+            }
+            collectNodes(element: child, depth: depth + 1,
+                         pathParts: pathParts + [pathLabel],
+                         nodes: &nodes, visited: &visited)
+        }
+    }
+
+    // MARK: - Render full tree
+
+    private func renderFullTree(nodes: [String: AXNode]) -> String {
+        let sorted = nodes.values.sorted { a, b in
+            a.displayLine.compare(b.displayLine, options: .literal) == .orderedAscending
+        }
+        // Re-render by collecting from scratch to preserve tree order
+        return MainActor.assumeIsolated {
+            guard let root = Element.focusedApplication() else {
+                return "// AX tree unavailable — no focused application"
+            }
+            var lines: [String] = []
+            var visited = Set<UInt>()
+            renderTree(element: root, depth: 0, lines: &lines, visited: &visited)
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    @MainActor
+    private func renderTree(
+        element: Element, depth: Int, lines: inout [String], visited: inout Set<UInt>
+    ) {
+        guard depth <= axTreeDepth else { return }
+        let hash = CFHash(element.underlyingElement)
+        guard visited.insert(hash).inserted else { return }
+
+        let role = element.role() ?? "AXUnknown"
+        let title = element.title()
+        let value: String? = {
+            if let v: String = element.attribute(Attribute<String>("AXValue")),
+               !v.isEmpty, v.count < 200 { return v }
+            return nil
+        }()
+        let identifier = element.identifier()
+        let children = element.children(strict: true) ?? []
+
+        let hasLabel = (title != nil && title?.isEmpty == false)
+            || value != nil
+            || (identifier != nil && identifier?.isEmpty == false)
+
         if Self.noiseRoles.contains(role), !hasLabel {
             for (i, child) in children.enumerated() {
                 if i >= Self.maxChildrenShown {
@@ -318,38 +413,74 @@ open class JourneyTestCase: XCTestCase {
                     lines.append("\(indent)... and \(children.count - Self.maxChildrenShown) more")
                     break
                 }
-                buildCompactTree(element: child, depth: depth, maxDepth: maxDepth,
-                                 lines: &lines, visited: &visited)
+                renderTree(element: child, depth: depth, lines: &lines, visited: &visited)
             }
             return
         }
 
-        // Build line: "  AXButton "Save" id=save-btn"
         let indent = String(repeating: "  ", count: depth)
         var line = "\(indent)\(role)"
-
-        if let t = title, !t.isEmpty {
-            line += " \"\(t.prefix(80))\""
-        }
-        if let v = value, !v.isEmpty, v != title {
-            line += " value=\"\(v.prefix(80))\""
-        }
-        if let id = identifier, !id.isEmpty {
-            line += " id=\(id.prefix(60))"
-        }
-
+        if let t = title, !t.isEmpty { line += " \"\(t.prefix(80))\"" }
+        if let v = value, !v.isEmpty, v != title { line += " value=\"\(v.prefix(80))\"" }
+        if let id = identifier, !id.isEmpty { line += " id=\(id.prefix(60))" }
         lines.append(line)
 
-        // Truncate long child lists (bookmarks, table rows, etc.)
         for (i, child) in children.enumerated() {
             if i >= Self.maxChildrenShown {
-                let remaining = children.count - Self.maxChildrenShown
-                lines.append("\(indent)  ... and \(remaining) more children")
+                lines.append("\(indent)  ... and \(children.count - Self.maxChildrenShown) more children")
                 break
             }
-            buildCompactTree(element: child, depth: depth + 1, maxDepth: maxDepth,
-                             lines: &lines, visited: &visited)
+            renderTree(element: child, depth: depth + 1, lines: &lines, visited: &visited)
         }
+    }
+
+    // MARK: - Render diff
+
+    private func renderDiff(previous: [String: AXNode], current: [String: AXNode], tag: String) -> String {
+        var lines: [String] = []
+
+        // Changed: same path, different value/title
+        for (path, cur) in current {
+            if let prev = previous[path] {
+                var changes: [String] = []
+                if prev.title != cur.title {
+                    changes.append("title: \"\(prev.title ?? "")\" → \"\(cur.title ?? "")\"")
+                }
+                if prev.value != cur.value {
+                    changes.append("value: \"\(prev.value ?? "")\" → \"\(cur.value ?? "")\"")
+                }
+                if !changes.isEmpty {
+                    lines.append("[CHANGED] \(path)")
+                    for c in changes {
+                        lines.append("  \(c)")
+                    }
+                }
+            }
+        }
+
+        // Added: in current but not in previous
+        let added = current.keys.filter { previous[$0] == nil }.sorted()
+        for path in added {
+            if let node = current[path] {
+                lines.append("[ADDED]   \(node.displayLine.trimmingCharacters(in: .whitespaces))")
+                lines.append("          at: \(path)")
+            }
+        }
+
+        // Removed: in previous but not in current
+        let removed = previous.keys.filter { current[$0] == nil }.sorted()
+        for path in removed {
+            if let node = previous[path] {
+                lines.append("[REMOVED] \(node.displayLine.trimmingCharacters(in: .whitespaces))")
+                lines.append("          was: \(path)")
+            }
+        }
+
+        if lines.isEmpty {
+            return "// No changes from previous snap"
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Private helpers

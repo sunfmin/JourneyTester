@@ -68,9 +68,6 @@ final class SafariJourneyTests: JourneyTestCase {
 
         step("verify tab count") {
             snap("tab-group-state")
-
-            let tree = dumpAXTree()
-            writeArtifact("tab-inspection.json", content: tree)
         }
     }
 
